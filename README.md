@@ -53,18 +53,23 @@ This synthetic dataset serves as a controlled environment to:
 
 The Unified Diffusion model extends the DDPM (Denoising Diffusion Probabilistic Models) framework by introducing position-specific noise schedules. The core architecture maintains the denoising score matching objective but allows for independent noise levels per token.
 
+Notation from DDPM:
+$$ p(x_{0:T}) = p(x_{T}) \prod_{t=1}^{T} p_{\theta}(x_{t-1} \mid x_{t}),\quad q(x_{1:T}|x_{0}) = \prod_{t=1}^{T} q(x_{t} \mid x_{t-1})$$
+$$ p_{\theta}(x_{t-1}|x_{t}) = \mathcal{N}(x_{t-1}; \mu_{\theta}(x_{t}, t), \sigma_{\theta}(x_{t}, t)),\quad q(x_{t} | x_{t-1}) = \mathcal{N}(x_{t}; \sqrt{1 - \beta_{t}} x_{t-1}, \beta_{t}I) $$
+$$ \alpha_{t}= 1 - \beta_{t},\quad \pi_t = \prod_{s=1}^{t} \alpha_{s} \implies q(x_{t} \mid x_{0}) = \mathcal{N}(x_{t}; \sqrt{\pi_t} x_{0}, (1 - \pi_{t})I) $$
+
 ### Training Objective
 
 The model is trained to predict the noise component given a partially noised input:
 
 ```python
-eps_theta(sqrt(gamma) * x_0 + sqrt(1 - gamma) * eps, gamma) -> eps
+eps_theta(sqrt(pi) * x_0 + sqrt(1 - pi) * eps, pi) -> eps
 ```
 
 where:
 - `eps_theta` is the model
-- `gamma` is a vector of current signal-to-noise ratios (γ = ∏ α_t = ∏ (1 - β_t))
-- `eps` is standard normal distributed noise
+- `pi = ∏ alpha[t] = ∏ (1 - beta[t])` denotes remaining signal variance, so `pi=1` means clean data and `pi=0` means pure noise
+- `eps` is standard normal distributed noise that was used to generate the noised input
 - `x_0` is the original clean data
 
 ### Sampling Process
@@ -72,12 +77,12 @@ where:
 Sampling follows Langevin dynamics with position-specific noise schedules:
 
 ```python
-x[t-1] = 1/sqrt(alpha[t]) * (x[t] - beta[t]/sqrt(1 - gamma[t]) * eps_theta) + sigma * randn()
+x[t-1] = 1/sqrt(alpha[t]) * (x[t] - beta[t]/sqrt(1 - pi[t]) * eps_theta) + sigma * randn()
 ```
 
 Key parameters:
-- `alpha[t] = gamma[t] / gamma[t-1]` (noise schedule step)
-- `beta[t] = 1 - alpha[t]` (noise level)
+- `alpha[t] = pi[t] / pi[t-1]` (signal variance decay at current step)
+- `beta[t] = 1 - alpha[t]` (added noise variance at current step)
 - `sigma[t] = beta[t]` (sampling noise, following DDPM)
 
 This formulation allows for flexible denoising patterns while maintaining the theoretical guarantees of diffusion models.
