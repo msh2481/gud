@@ -1,0 +1,14 @@
+[project]
+name = "gud"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beartype>=0.19.0",
+    "jaxtyping>=0.2.37",
+    "loguru>=0.7.3",
+    "matplotlib>=3.10.0",
+    "numpy>=2.2.2",
+    "torch>=2.5.1",
+]
