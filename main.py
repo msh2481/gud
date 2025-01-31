@@ -11,8 +11,8 @@ from numpy import ndarray as ND
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 
-TRAIN_MODEL = False  # Set to True to train, False to load
-MODEL_PATH = Path("denoiser.pt")
+TRAIN_MODEL = False
+MODEL_PATH = "denoiser.pt"
 
 
 @typed
@@ -85,7 +85,7 @@ def make_schedule(
         right_pos = start_from + step * speed
         pos = t.arange(start_from, seq_len)
         dist = (pos - right_pos) / (denoise_steps * speed)
-        schedule[step, start_from:] = (-dist).clamp(0, 1)
+        schedule[step, start_from:] = (-dist).clamp(1e-3, 1)
 
     return schedule
 
@@ -205,18 +205,19 @@ def sample(
     xs = t.zeros(batch_size, n_steps, seq_len, device=device)
     xs[:, 0] = x_t
 
-    # For each step t, generate x_{t-1}
-    for t in range(1, n_steps):
-        curr_var = signal_var_schedule[t - 1]
-        prev_var = signal_var_schedule[t]
-        alpha = prev_var / curr_var
+    for it in range(n_steps - 1):
+        curr_var = signal_var_schedule[it]
+        nxt_var = signal_var_schedule[it + 1]
+        alpha = nxt_var / curr_var
         beta = 1 - alpha
-        pred_noise = model(xs[:, t - 1], curr_var)
-        xs[:, t] = (1 / t.sqrt(alpha)) * (
-            xs[:, t - 1] - (beta / t.sqrt(1 - curr_var)) * pred_noise
+        logger.info(f"min beta: {beta.min()} | max beta: {beta.max()}")
+        beta = beta.clamp(0.0, 1.0)
+        pred_noise = model(xs[:, it], curr_var.repeat(batch_size, 1))
+        xs[:, it + 1] = (1 / t.sqrt(alpha)) * (
+            xs[:, it] - (beta / t.sqrt(1 - curr_var)) * pred_noise
         )
-        if t < n_steps - 1:
-            xs[:, t] = xs[:, t] + t.sqrt(beta) * t.randn_like(xs[:, t])
+        if it < n_steps - 1:
+            xs[:, it] = xs[:, it] + t.sqrt(beta) * t.randn_like(xs[:, it])
 
     return xs
 
@@ -253,7 +254,7 @@ def main():
         logger.info(f"Model saved to {MODEL_PATH}")
     else:
         # Load model
-        if not MODEL_PATH.exists():
+        if not Path(MODEL_PATH).exists():
             raise FileNotFoundError(
                 f"Model file {MODEL_PATH} not found. Set TRAIN_MODEL=True to train first."
             )
@@ -277,14 +278,23 @@ def main():
             start_from=prefix,
         )
         schedule = schedule.to(device)
+        # Heatmap of schedule
+        plt.figure(figsize=(10, 5))
+        plt.imshow(schedule.cpu(), cmap="hot", aspect="auto")
+        plt.colorbar()
+        plt.show()
+
         samples = sample(model, xt, schedule)
 
-        plt.figure(figsize=(15, 5))
+        logger.info(f"Samples shape: {samples.shape}")
+
         for i in range(len(schedule)):
-            alpha = i / (len(schedule) - 1)
-            plt.plot(samples[0, i].cpu(), alpha=alpha, color="b")
-        plt.title("Denoising Process")
-        plt.show()
+            plt.figure(figsize=(15, 5))
+            plt.plot(samples[0, i].cpu(), color="b")
+            # print(samples[0, i].cpu().numpy())
+            plt.title(f"Denoising Step {i}")
+            plt.savefig(f"{i}_step.png")
+            plt.close()
 
 
 if __name__ == "__main__":
