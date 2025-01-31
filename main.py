@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import torch as t
 import torch.nn.functional as F
@@ -6,8 +8,11 @@ from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
 from numpy import ndarray as ND
-from torch import nn
+from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
+
+TRAIN_MODEL = False  # Set to True to train, False to load
+MODEL_PATH = Path("denoiser.pt")
 
 
 @typed
@@ -27,16 +32,70 @@ def gen_dataset(dataset_size: int, *args, **kwargs) -> Float[ND, "dataset_size n
     return np.stack([gen(*args, **kwargs) for _ in range(dataset_size)])
 
 
-def uniform_schedule(seq_len: int) -> t.Tensor:
+@typed
+def uniform_schedule(seq_len: int) -> Float[TT, "seq_len"]:
     """Returns signal variance (pi) values ~ U[0,1] for each position"""
     return t.rand(seq_len)
+
+
+@typed
+def make_schedule(
+    seq_len: int,
+    n_steps: int | None = None,
+    shape: str = "linear",
+    speed: float | None = None,  # Tokens per step
+    denoise_steps: int = 10,  # Steps to denoise each token
+    start_from: int = 0,  # Position to start denoising from
+) -> Float[TT, "n_steps seq_len"]:
+    """Generate a noise schedule that progressively denoises from left to right.
+
+    Args:
+        seq_len: Length of sequence
+        n_steps: Total number of denoising steps (computed from speed if None)
+        shape: Schedule shape ('linear' for now)
+        speed: How many tokens to advance per step (computed from n_steps if None)
+        denoise_steps: How many steps to spend denoising each token
+        start_from: Position to start denoising from (earlier positions stay clean)
+
+    Returns:
+        Schedule of signal variances [n_steps, seq_len]
+        where 0 = pure noise, 1 = clean signal
+    """
+    if shape != "linear":
+        raise ValueError("Only 'linear' shape supported for now")
+
+    if (n_steps is None) == (speed is None):
+        raise ValueError("Exactly one of n_steps or speed must be provided")
+
+    # Compute schedule only for tokens that need denoising
+    remaining_len = seq_len - start_from
+
+    if n_steps is None:
+        n_steps = int(remaining_len / speed + denoise_steps)
+        logger.info(f"Computed n_steps: {n_steps}")
+    else:
+        assert n_steps > denoise_steps, "n_steps must be greater than denoise_steps"
+        speed = remaining_len / (n_steps - denoise_steps)
+        logger.info(f"Computed speed: {speed}")
+
+    schedule = t.ones(n_steps, seq_len)  # Initialize all to clean
+
+    # Only schedule denoising for tokens after start_from
+    for step in range(n_steps):
+        right_pos = start_from + step * speed
+        pos = t.arange(start_from, seq_len)
+        dist = (pos - right_pos) / (denoise_steps * speed)
+        schedule[step, start_from:] = (-dist).clamp(0, 1)
+
+    return schedule
 
 
 class DenoiserConv(nn.Module):
     def __init__(self, window_size=5):
         super().__init__()
         self.window_size = window_size
-        self.conv = nn.Conv1d(2, 32, kernel_size=window_size, padding="same")
+        # Use padding=0 and manually pad on the left
+        self.conv = nn.Conv1d(2, 32, kernel_size=window_size, padding=0)
         self.mlp = nn.Sequential(
             nn.ReLU(),
             nn.Conv1d(32, 64, kernel_size=1),
@@ -44,7 +103,12 @@ class DenoiserConv(nn.Module):
             nn.Conv1d(64, 1, kernel_size=1),
         )
 
-    def forward(self, noisy_seq: t.Tensor, signal_var: t.Tensor) -> t.Tensor:
+    @typed
+    def forward(
+        self,
+        noisy_seq: Float[TT, "batch seq_len"],
+        signal_var: Float[TT, "batch seq_len"],
+    ) -> Float[TT, "batch seq_len"]:
         """
         Args:
             noisy_seq: [batch_size, seq_len]
@@ -52,15 +116,19 @@ class DenoiserConv(nn.Module):
         Returns:
             [batch_size, seq_len] predicted noise
         """
-        # Stack noisy_seq and signal_var as channels
+        # Stack inputs as channels
         x = t.stack([noisy_seq, signal_var], dim=1)  # [batch, 2, seq_len]
+        # Add causal padding on the left
+        pad_size = self.window_size - 1
+        x = F.pad(x, (pad_size, 0), mode="constant", value=0)
         x = self.conv(x)
         x = self.mlp(x)
         return x.squeeze(1)
 
 
 class DiffusionDataset(Dataset):
-    def __init__(self, clean_data: t.Tensor, schedule_fn):
+    @typed
+    def __init__(self, clean_data: Float[TT, "batch seq_len"], schedule_fn):
         """
         Args:
             clean_data: [num_samples, seq_len] tensor of clean sequences
@@ -69,8 +137,13 @@ class DiffusionDataset(Dataset):
         self.clean_data = clean_data
         self.schedule_fn = schedule_fn
 
-    def __getitem__(self, idx):
-        x0 = self.clean_data[idx]  # [seq_len]
+    @typed
+    def __getitem__(self, idx: int) -> tuple[
+        Float[TT, "seq_len"],  # xt
+        Float[TT, "seq_len"],  # signal_var
+        Float[TT, "seq_len"],  # noise
+    ]:
+        x0 = self.clean_data[idx]
         signal_var = self.schedule_fn(len(x0))
         noise = t.randn_like(x0)
         xt = t.sqrt(signal_var) * x0 + t.sqrt(1 - signal_var) * noise
@@ -80,6 +153,7 @@ class DiffusionDataset(Dataset):
         return len(self.clean_data)
 
 
+@typed
 def train(
     model: nn.Module,
     train_loader: DataLoader,
@@ -116,6 +190,37 @@ def train(
     return losses
 
 
+@typed
+def sample(
+    model: nn.Module,
+    x_t: Float[TT, "batch seq_len"],
+    signal_var_schedule: Float[TT, "n_steps seq_len"],
+) -> Float[TT, "batch n_steps seq_len"]:
+    """Sample from the diffusion model following the schedule."""
+    device = x_t.device
+    n_steps = len(signal_var_schedule)
+    batch_size, seq_len = x_t.shape
+
+    # Store all intermediate steps [batch, n_steps, seq_len]
+    xs = t.zeros(batch_size, n_steps, seq_len, device=device)
+    xs[:, 0] = x_t
+
+    # For each step t, generate x_{t-1}
+    for t in range(1, n_steps):
+        curr_var = signal_var_schedule[t - 1]
+        prev_var = signal_var_schedule[t]
+        alpha = prev_var / curr_var
+        beta = 1 - alpha
+        pred_noise = model(xs[:, t - 1], curr_var)
+        xs[:, t] = (1 / t.sqrt(alpha)) * (
+            xs[:, t - 1] - (beta / t.sqrt(1 - curr_var)) * pred_noise
+        )
+        if t < n_steps - 1:
+            xs[:, t] = xs[:, t] + t.sqrt(beta) * t.randn_like(xs[:, t])
+
+    return xs
+
+
 def main():
     # Generate synthetic dataset
     batch_size = 32
@@ -123,36 +228,62 @@ def main():
     dataset_size = 1000
     device = "cuda" if t.cuda.is_available() else "cpu"
 
-    clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=0.5)
-    dataset = DiffusionDataset(t.from_numpy(clean_data).float(), uniform_schedule)
-    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-    # Train model
+    # Initialize model
     model = DenoiserConv(window_size=5)
-    losses = train(model, train_loader, num_epochs=10, device=device)
 
-    # Plot training losses
-    plt.figure(figsize=(10, 5))
-    plt.plot(losses)
-    plt.xlabel("Epoch")
-    plt.ylabel("MSE Loss")
-    plt.title("Training Loss")
-    plt.show()
+    if TRAIN_MODEL:
+        clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=0.5)
+        dataset = DiffusionDataset(t.from_numpy(clean_data).float(), uniform_schedule)
+        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    # Plot example predictions
+        # Train model
+        losses = train(model, train_loader, num_epochs=10, device=device)
+
+        # Plot training losses
+        plt.figure(figsize=(10, 5))
+        plt.plot(losses)
+        plt.xlabel("Epoch")
+        plt.ylabel("MSE Loss")
+        plt.title("Training Loss")
+        plt.show()
+
+        # Save model
+        model.cpu()
+        t.save(model.state_dict(), MODEL_PATH)
+        logger.info(f"Model saved to {MODEL_PATH}")
+    else:
+        # Load model
+        if not MODEL_PATH.exists():
+            raise FileNotFoundError(
+                f"Model file {MODEL_PATH} not found. Set TRAIN_MODEL=True to train first."
+            )
+        model.load_state_dict(t.load(MODEL_PATH))
+        logger.info(f"Model loaded from {MODEL_PATH}")
+
+    # Move model to device and set to eval mode
+    model = model.to(device)
     model.eval()
+
+    # Visualization code continues as before...
     with t.no_grad():
-        xt, signal_var, noise = next(iter(train_loader))
-        xt, signal_var = xt.to(device), signal_var.to(device)
-        pred_noise = model(xt, signal_var)
+        xt = gen_dataset(1, seq_len, chaos_ratio=0.5)[0]
+        xt = t.from_numpy(xt).float().unsqueeze(0).to(device)
+        prefix = 10
+
+        schedule = make_schedule(
+            seq_len=len(xt[0]),
+            n_steps=50,
+            denoise_steps=10,
+            start_from=prefix,
+        )
+        schedule = schedule.to(device)
+        samples = sample(model, xt, schedule)
 
         plt.figure(figsize=(15, 5))
-        idx = 0  # Plot first sequence in batch
-        plt.plot(xt[idx].cpu(), label="Noisy")
-        plt.plot(noise[idx].cpu(), label="True Noise")
-        plt.plot(pred_noise[idx].cpu(), label="Predicted Noise")
-        plt.legend()
-        plt.title("Example Prediction")
+        for i in range(len(schedule)):
+            alpha = i / (len(schedule) - 1)
+            plt.plot(samples[0, i].cpu(), alpha=alpha, color="b")
+        plt.title("Denoising Process")
         plt.show()
 
 
