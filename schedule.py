@@ -36,6 +36,15 @@ class Schedule:
         self.assert_invariants()
 
     @typed
+    def to(self, device: torch.device | str) -> "Schedule":
+        return Schedule(
+            self.signal_ratio.to(device),
+            self.noise_level.to(device),
+            self.signal_var.to(device),
+            self.noise_var.to(device),
+        )
+
+    @typed
     def sample_signal_var(self) -> Float[TT, "seq_len"]:
         pos = torch.randint(1, self.signal_var.shape[0], ())
         return self.signal_var[pos]
