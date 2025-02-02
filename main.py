@@ -1,18 +1,33 @@
 from pathlib import Path
+from typing import Annotated
 
 import numpy as np
 import torch as t
 import torch.nn.functional as F
+import typer
 from beartype import beartype as typed
 from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
 from numpy import ndarray as ND
+from rich.progress import track
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 
-TRAIN_MODEL = False
+app = typer.Typer()
+
+TRAIN_MODEL = True
 MODEL_PATH = "denoiser.pt"
+
+
+@typed
+def set_seed(seed: int):
+    """Set random seeds for reproducibility"""
+    np.random.seed(seed)
+    t.manual_seed(seed)
+    t.cuda.manual_seed_all(seed)
+    t.backends.cudnn.deterministic = True
+    t.backends.cudnn.benchmark = False
 
 
 @typed
@@ -22,7 +37,7 @@ def gen(n: int, chaos_ratio: float = 0.5) -> Float[ND, "n"]:
     r = 3.9993
     for i in range(1, n):
         x = logistic_map[i - 1]
-        logistic_map[i] += r * x * (1 - x)
+        logistic_map[i] += (x + 0.1) % 1.0  # r * x * (1 - x)
     noise = np.random.randn(n) + np.random.randn()
     return logistic_map * chaos_ratio + noise * (1 - chaos_ratio)
 
@@ -191,7 +206,7 @@ def train(
 
 
 @typed
-def sample(
+def do_sample(
     model: nn.Module,
     x_t: Float[TT, "batch seq_len"],
     signal_var_schedule: Float[TT, "n_steps seq_len"],
@@ -233,76 +248,158 @@ def sample(
     return xs
 
 
-def main():
-    # Generate synthetic dataset
-    batch_size = 32
-    seq_len = 100
-    dataset_size = 1000
-    device = "cuda" if t.cuda.is_available() else "cpu"
+@app.command()
+def visualize_data(
+    n_samples: Annotated[int, typer.Option(help="Number of samples to generate")] = 5,
+    seq_len: Annotated[int, typer.Option(help="Length of each sequence")] = 100,
+    chaos_ratio: Annotated[
+        float, typer.Option(help="Ratio of chaos vs noise (0-1)")
+    ] = 1.0,
+    save_path: Annotated[str | None, typer.Option(help="Path to save the plot")] = None,
+    seed: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
+):
+    """Generate and visualize sample sequences"""
+    set_seed(seed)
+    data = gen_dataset(n_samples, seq_len, chaos_ratio=chaos_ratio)
+
+    plt.figure(figsize=(15, 5))
+    for i in range(n_samples):
+        plt.plot(data[i], label=f"Sample {i+1}", alpha=0.7)
+    plt.title(f"Generated Sequences (chaos_ratio={chaos_ratio}, seed={seed})")
+    plt.legend()
+
+    if save_path:
+        plt.savefig(save_path)
+        logger.info(f"Plot saved to {save_path}")
+    else:
+        plt.show()
+    plt.close()
+
+
+@app.command()
+def train_denoiser(
+    output_path: Annotated[
+        str, typer.Option(help="Path to save the trained model")
+    ] = "denoiser.pt",
+    epochs: Annotated[int, typer.Option(help="Number of training epochs")] = 100,
+    batch_size: Annotated[int, typer.Option(help="Batch size for training")] = 32,
+    dataset_size: Annotated[
+        int, typer.Option(help="Number of training sequences")
+    ] = 1000,
+    seq_len: Annotated[int, typer.Option(help="Length of each sequence")] = 100,
+    chaos_ratio: Annotated[
+        float, typer.Option(help="Ratio of chaos vs noise (0-1)")
+    ] = 1.0,
+    device: Annotated[
+        str | None, typer.Option(help="Device to train on (cpu/cuda)")
+    ] = None,
+    seed: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
+):
+    """Train the denoising model"""
+    set_seed(seed)
+    if device is None:
+        device = "cuda" if t.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
 
     # Initialize model
     model = DenoiserConv(window_size=5)
 
-    if TRAIN_MODEL:
-        clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=0.5)
-        dataset = DiffusionDataset(t.from_numpy(clean_data).float(), uniform_schedule)
-        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    # Generate dataset
+    clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=chaos_ratio)
+    dataset = DiffusionDataset(t.from_numpy(clean_data).float(), uniform_schedule)
+    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-        # Train model
-        losses = train(model, train_loader, num_epochs=10, device=device)
+    # Train model
+    losses = train(model, train_loader, num_epochs=epochs, device=device)
 
-        # Plot training losses
-        plt.figure(figsize=(10, 5))
-        plt.plot(losses)
-        plt.xlabel("Epoch")
-        plt.ylabel("MSE Loss")
-        plt.title("Training Loss")
-        plt.show()
+    # Plot training losses
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses)
+    plt.xlabel("Epoch")
+    plt.ylabel("MSE Loss")
+    plt.title(f"Training Loss (seed={seed})")
+    plt.savefig("training_loss.png")
+    plt.close()
 
-        # Save model
-        model.cpu()
-        t.save(model.state_dict(), MODEL_PATH)
-        logger.info(f"Model saved to {MODEL_PATH}")
+    # Save model
+    model.cpu()
+    t.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "seed": seed,
+            "chaos_ratio": chaos_ratio,
+            "seq_len": seq_len,
+            "epochs": epochs,
+        },
+        output_path,
+    )
+    logger.info(f"Model saved to {output_path}")
+
+
+@app.command()
+def sample(
+    model_path: Annotated[
+        str, typer.Option(help="Path to the trained model")
+    ] = "denoiser.pt",
+    seq_len: Annotated[int, typer.Option(help="Length of sequence to generate")] = 100,
+    n_steps: Annotated[int, typer.Option(help="Number of denoising steps")] = 50,
+    denoise_steps: Annotated[
+        int, typer.Option(help="Steps to denoise each token")
+    ] = 10,
+    prefix: Annotated[int, typer.Option(help="Position to start denoising from")] = 10,
+    chaos_ratio: Annotated[
+        float, typer.Option(help="Ratio of chaos vs noise (0-1)")
+    ] = 0.5,
+    device: Annotated[
+        str | None, typer.Option(help="Device to run on (cpu/cuda)")
+    ] = None,
+    output_path: Annotated[
+        str, typer.Option(help="Path to save the animation")
+    ] = "denoising_animation.gif",
+    seed: Annotated[int, typer.Option(help="Random seed for reproducibility")] = 42,
+):
+    """Sample from a trained model"""
+    set_seed(seed)
+    if device is None:
+        device = "cuda" if t.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
+
+    # Load model
+    model = DenoiserConv(window_size=5)
+    if not Path(model_path).exists():
+        raise FileNotFoundError(f"Model file {model_path} not found")
+
+    checkpoint = t.load(model_path)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        logger.info(
+            f"Loaded model trained with seed={checkpoint.get('seed')}, "
+            f"chaos_ratio={checkpoint.get('chaos_ratio')}"
+        )
     else:
-        # Load model
-        if not Path(MODEL_PATH).exists():
-            raise FileNotFoundError(
-                f"Model file {MODEL_PATH} not found. Set TRAIN_MODEL=True to train first."
-            )
-        model.load_state_dict(t.load(MODEL_PATH))
-        logger.info(f"Model loaded from {MODEL_PATH}")
+        model.load_state_dict(checkpoint)
+        logger.info("Loaded legacy model format")
 
-    # Move model to device and set to eval mode
-    model = model.to(device)
-    model.eval()
-    # Check for NaNs in model parameters
-    for p in model.parameters():
-        assert not p.isnan().any()
+    model.to(device).eval()
 
-    # Visualization code continues as before...
     with t.no_grad():
-        xt = gen_dataset(1, seq_len, chaos_ratio=0.5)[0]
+        # Generate input sequence
+        xt = gen_dataset(1, seq_len, chaos_ratio=chaos_ratio)[0]
         xt = t.from_numpy(xt).float().unsqueeze(0).to(device)
-        prefix = 10
 
+        # Create schedule
         schedule = make_schedule(
             seq_len=len(xt[0]),
-            n_steps=50,
-            denoise_steps=10,
+            n_steps=n_steps,
+            denoise_steps=denoise_steps,
             start_from=prefix,
-        )
-        schedule = schedule.to(device)
-        # # Heatmap of schedule
-        # plt.figure(figsize=(10, 5))
-        # plt.imshow(schedule.cpu(), cmap="hot", aspect="auto")
-        # plt.colorbar()
-        # plt.show()
+        ).to(device)
 
-        samples = sample(model, xt, schedule)
+        # Sample
+        samples = do_sample(model, xt, schedule)
+        logger.info(f"Generated samples shape: {samples.shape}")
 
-        logger.info(f"Samples shape: {samples.shape}")
-
-        # Set up the animation
+        # Create animation
         import matplotlib.animation as animation
 
         fig = plt.figure(figsize=(15, 5))
@@ -314,10 +411,11 @@ def main():
             for i in range(frame + 1):
                 alpha = 1.1 ** (i - frame)
                 ax.plot(samples[0, i].cpu(), color=colors[i], lw=0.5, alpha=alpha)
-            ax.set_title(f"Denoising Steps (Step {frame + 1}/{len(schedule)})")
+            ax.set_title(
+                f"Denoising Steps (Step {frame + 1}/{len(schedule)}, seed={seed})"
+            )
             ax.set_ylim(samples[-1].cpu().min() - 1, samples[-1].cpu().max() + 1)
 
-        # Create animation
         anim = animation.FuncAnimation(
             fig,
             update,
@@ -326,12 +424,10 @@ def main():
             blit=False,
         )
 
-        # Save as GIF
-        anim.save("denoising_animation.gif", writer="pillow")
+        anim.save(output_path, writer="pillow")
         plt.close()
-
-        logger.info("Animation saved as denoising_animation.gif")
+        logger.info(f"Animation saved to {output_path}")
 
 
 if __name__ == "__main__":
-    main()
+    app()
