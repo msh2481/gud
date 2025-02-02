@@ -201,23 +201,34 @@ def sample(
     n_steps = len(signal_var_schedule)
     batch_size, seq_len = x_t.shape
 
+    # Assert that signal_var_schedule[:, i] is a decreasing sequence
+    assert (signal_var_schedule[0, :] <= signal_var_schedule[-1, :]).all()
+    # logger.info(f"signal_var_schedule shape: {signal_var_schedule.shape}")
+    # logger.info(f"signal_var_schedule: {signal_var_schedule[:5, 10:15]}")
+
     # Store all intermediate steps [batch, n_steps, seq_len]
     xs = t.zeros(batch_size, n_steps, seq_len, device=device)
     xs[:, 0] = x_t
+    eps = 1e-8
 
     for it in range(n_steps - 1):
         curr_var = signal_var_schedule[it]
         nxt_var = signal_var_schedule[it + 1]
-        alpha = nxt_var / curr_var
+        assert (curr_var <= nxt_var).all()
+        alpha = curr_var / (nxt_var + eps)
         beta = 1 - alpha
-        logger.info(f"min beta: {beta.min()} | max beta: {beta.max()}")
         beta = beta.clamp(0.0, 1.0)
-        pred_noise = model(xs[:, it], curr_var.repeat(batch_size, 1))
-        xs[:, it + 1] = (1 / t.sqrt(alpha)) * (
-            xs[:, it] - (beta / t.sqrt(1 - curr_var)) * pred_noise
-        )
-        if it < n_steps - 1:
-            xs[:, it] = xs[:, it] + t.sqrt(beta) * t.randn_like(xs[:, it])
+        x_cur = xs[:, it]
+        assert not x_cur.isnan().any(), f"x_cur is nan at it={it}"
+        pred_noise = model(x_cur, curr_var.repeat(batch_size, 1))
+
+        upscale_coef = 1 / t.sqrt(alpha)
+        noise_coef = beta / (t.sqrt(1 - curr_var) + eps)
+        x_new = upscale_coef * (x_cur - noise_coef * pred_noise)
+
+        if it < n_steps - 2:
+            x_new = x_new + t.sqrt(beta) * t.randn_like(x_new)
+        xs[:, it + 1] = x_new
 
     return xs
 
@@ -264,6 +275,9 @@ def main():
     # Move model to device and set to eval mode
     model = model.to(device)
     model.eval()
+    # Check for NaNs in model parameters
+    for p in model.parameters():
+        assert not p.isnan().any()
 
     # Visualization code continues as before...
     with t.no_grad():
@@ -278,23 +292,45 @@ def main():
             start_from=prefix,
         )
         schedule = schedule.to(device)
-        # Heatmap of schedule
-        plt.figure(figsize=(10, 5))
-        plt.imshow(schedule.cpu(), cmap="hot", aspect="auto")
-        plt.colorbar()
-        plt.show()
+        # # Heatmap of schedule
+        # plt.figure(figsize=(10, 5))
+        # plt.imshow(schedule.cpu(), cmap="hot", aspect="auto")
+        # plt.colorbar()
+        # plt.show()
 
         samples = sample(model, xt, schedule)
 
         logger.info(f"Samples shape: {samples.shape}")
 
-        for i in range(len(schedule)):
-            plt.figure(figsize=(15, 5))
-            plt.plot(samples[0, i].cpu(), color="b")
-            # print(samples[0, i].cpu().numpy())
-            plt.title(f"Denoising Step {i}")
-            plt.savefig(f"{i}_step.png")
-            plt.close()
+        # Set up the animation
+        import matplotlib.animation as animation
+
+        fig = plt.figure(figsize=(15, 5))
+        ax = plt.gca()
+
+        def update(frame):
+            ax.clear()
+            colors = plt.cm.jet(np.linspace(0, 1, len(schedule)))
+            for i in range(frame + 1):
+                alpha = 1.1 ** (i - frame)
+                ax.plot(samples[0, i].cpu(), color=colors[i], lw=0.5, alpha=alpha)
+            ax.set_title(f"Denoising Steps (Step {frame + 1}/{len(schedule)})")
+            ax.set_ylim(samples[-1].cpu().min() - 1, samples[-1].cpu().max() + 1)
+
+        # Create animation
+        anim = animation.FuncAnimation(
+            fig,
+            update,
+            frames=len(schedule),
+            interval=100,
+            blit=False,
+        )
+
+        # Save as GIF
+        anim.save("denoising_animation.gif", writer="pillow")
+        plt.close()
+
+        logger.info("Animation saved as denoising_animation.gif")
 
 
 if __name__ == "__main__":
