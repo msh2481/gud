@@ -47,64 +47,6 @@ def gen_dataset(dataset_size: int, *args, **kwargs) -> Float[ND, "dataset_size n
     return np.stack([gen(*args, **kwargs) for _ in range(dataset_size)])
 
 
-@typed
-def uniform_schedule(seq_len: int) -> Float[TT, "seq_len"]:
-    """Returns signal variance (pi) values ~ U[0,1] for each position"""
-    return t.rand(seq_len)
-
-
-@typed
-def make_schedule_for_sampling(
-    seq_len: int,
-    n_steps: int | None = None,
-    shape: str = "linear",
-    speed: float | None = None,  # Tokens per step
-    denoise_steps: int = 10,  # Steps to denoise each token
-    start_from: int = 0,  # Position to start denoising from
-) -> Float[TT, "n_steps seq_len"]:
-    """Generate a noise schedule that progressively denoises from left to right.
-
-    Args:
-        seq_len: Length of sequence
-        n_steps: Total number of denoising steps (computed from speed if None)
-        shape: Schedule shape ('linear' for now)
-        speed: How many tokens to advance per step (computed from n_steps if None)
-        denoise_steps: How many steps to spend denoising each token
-        start_from: Position to start denoising from (earlier positions stay clean)
-
-    Returns:
-        Schedule of signal variances [n_steps, seq_len]
-        where 0 = pure noise, 1 = clean signal
-    """
-    if shape != "linear":
-        raise ValueError("Only 'linear' shape supported for now")
-
-    if (n_steps is None) == (speed is None):
-        raise ValueError("Exactly one of n_steps or speed must be provided")
-
-    # Compute schedule only for tokens that need denoising
-    remaining_len = seq_len - start_from
-
-    if n_steps is None:
-        n_steps = int(remaining_len / speed + denoise_steps)
-        logger.info(f"Computed n_steps: {n_steps}")
-    else:
-        assert n_steps > denoise_steps, "n_steps must be greater than denoise_steps"
-        speed = remaining_len / (n_steps - denoise_steps)
-        logger.info(f"Computed speed: {speed}")
-
-    schedule = t.ones(n_steps, seq_len)  # Initialize all to clean
-
-    # Only schedule denoising for tokens after start_from
-    for step in range(n_steps):
-        right_pos = start_from + step * speed
-        pos = t.arange(start_from, seq_len)
-        dist = (pos - right_pos) / (denoise_steps * speed)
-        schedule[step, start_from:] = (-dist).clamp(1e-3, 1)
-
-    return schedule
-
-
 class DenoiserConv(nn.Module):
     def __init__(self, window_size=5):
         super().__init__()
@@ -139,33 +81,6 @@ class DenoiserConv(nn.Module):
         x = self.conv(x)
         x = self.mlp(x)
         return x.squeeze(1)
-
-
-class DiffusionDataset(Dataset):
-    @typed
-    def __init__(self, clean_data: Float[TT, "batch seq_len"], schedule_fn):
-        """
-        Args:
-            clean_data: [num_samples, seq_len] tensor of clean sequences
-            schedule_fn: function(seq_len) -> [seq_len] tensor of signal variances
-        """
-        self.clean_data = clean_data
-        self.schedule_fn = schedule_fn
-
-    @typed
-    def __getitem__(self, idx: int) -> tuple[
-        Float[TT, "seq_len"],  # xt
-        Float[TT, "seq_len"],  # signal_var
-        Float[TT, "seq_len"],  # noise
-    ]:
-        x0 = self.clean_data[idx]
-        signal_var = self.schedule_fn(len(x0))
-        noise = t.randn_like(x0)
-        xt = t.sqrt(signal_var) * x0 + t.sqrt(1 - signal_var) * noise
-        return xt, signal_var, noise
-
-    def __len__(self):
-        return len(self.clean_data)
 
 
 @typed

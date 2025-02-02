@@ -36,6 +36,11 @@ class Schedule:
         self.assert_invariants()
 
     @typed
+    def sample_signal_var(self) -> Float[TT, "seq_len"]:
+        pos = torch.randint(1, self.signal_var.shape[0], ())
+        return self.signal_var[pos]
+
+    @typed
     def assert_invariants(self):
         # Shape
         assert (
@@ -184,7 +189,7 @@ class Schedule:
         ratios = torch.ones((n_steps, seq_len))
         ratio_value = final_signal_var ** (1 / denoise_steps)
         for pos in range(start_from, seq_len):
-            start_time = int((pos - start_from) / speed)
+            start_time = int((seq_len - pos) / speed)
             end_time = start_time + denoise_steps
             ratios[start_time:end_time, pos] = ratio_value
         return cls.from_signal_ratio(ratios)
@@ -203,6 +208,9 @@ def test_schedule():
     print(schedule.signal_var)
     print("Noise var:")
     print(schedule.noise_var)
+
+    for _ in range(10):
+        print(schedule.sample_signal_var())
 
 
 @typed
