@@ -54,7 +54,7 @@ def uniform_schedule(seq_len: int) -> Float[TT, "seq_len"]:
 
 
 @typed
-def make_schedule(
+def make_schedule_for_sampling(
     seq_len: int,
     n_steps: int | None = None,
     shape: str = "linear",
@@ -388,7 +388,7 @@ def sample(
         xt = t.from_numpy(xt).float().unsqueeze(0).to(device)
 
         # Create schedule
-        schedule = make_schedule(
+        schedule = make_schedule_for_sampling(
             seq_len=len(xt[0]),
             n_steps=n_steps,
             denoise_steps=denoise_steps,
