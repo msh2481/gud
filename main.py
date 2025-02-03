@@ -51,9 +51,11 @@ class DenoiserConv(nn.Module):
         """
         # Mock solution
         shifted = torch.zeros_like(noisy_seq)
-        shifted[:, 1:] = noisy_seq[:, :-1]
+        shifted[:, 1:] = noisy_seq[:, :-1] / torch.sqrt(signal_var[:, :-1])
         gt = (shifted + 0.1) % 1.0
-        eps = 1e-8
+        # logger.info(f"noisy_seq: {noisy_seq}")
+        # logger.info(f"gt: {gt}")
+        eps = 1e-6
         # noisy_seq = gt * sqrt(signal_var) + noise * sqrt(1 - signal_var)
         noise = (noisy_seq - gt * torch.sqrt(signal_var)) / (
             torch.sqrt(1 - signal_var) + eps
@@ -67,7 +69,7 @@ class DenoiserConv(nn.Module):
         x = self.conv(x)
         x = self.mlp(x).squeeze(1)
         assert x.shape == noise.shape
-        return x * 1e-9 + noise
+        return x * 0.0 + noise
 
 
 @typed
@@ -326,5 +328,5 @@ def test_model():
 
 if __name__ == "__main__":
     # train_denoiser()
-    sample()
-    # test_model()
+    # sample()
+    test_model()
