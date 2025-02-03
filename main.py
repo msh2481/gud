@@ -69,7 +69,7 @@ class DenoiserConv(nn.Module):
         x = self.conv(x)
         x = self.mlp(x).squeeze(1)
         assert x.shape == noise.shape
-        return x * 0.0 + noise
+        return x  # * 0.0 + noise
 
 
 @typed
@@ -325,6 +325,6 @@ def test_model():
 
 
 if __name__ == "__main__":
-    # train_denoiser()
-    sample()
+    train_denoiser()
+    # sample()
     # test_model()
