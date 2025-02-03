@@ -121,56 +121,6 @@ class Schedule:
         noise_var = 1 - signal_var
         return cls(signal_ratio, noise_level, signal_var, noise_var)
 
-    # @typed
-    # def make_schedule_for_sampling(
-    #     seq_len: int,
-    #     n_steps: int | None = None,
-    #     shape: str = "linear",
-    #     speed: float | None = None,  # Tokens per step
-    #     denoise_steps: int = 10,  # Steps to denoise each token
-    #     start_from: int = 0,  # Position to start denoising from
-    # ) -> Float[TT, "n_steps seq_len"]:
-    #     """Generate a noise schedule that progressively denoises from left to right.
-
-    #     Args:
-    #         seq_len: Length of sequence
-    #         n_steps: Total number of denoising steps (computed from speed if None)
-    #         shape: Schedule shape ('linear' for now)
-    #         speed: How many tokens to advance per step (computed from n_steps if None)
-    #         denoise_steps: How many steps to spend denoising each token
-    #         start_from: Position to start denoising from (earlier positions stay clean)
-
-    #     Returns:
-    #         Schedule of signal variances [n_steps, seq_len]
-    #         where 0 = pure noise, 1 = clean signal
-    #     """
-    #     if shape != "linear":
-    #         raise ValueError("Only 'linear' shape supported for now")
-
-    #     if (n_steps is None) == (speed is None):
-    #         raise ValueError("Exactly one of n_steps or speed must be provided")
-
-    #     # Compute schedule only for tokens that need denoising
-    #     remaining_len = seq_len - start_from
-
-    #     if n_steps is None:
-    #         n_steps = int(remaining_len / speed + denoise_steps)
-    #         logger.info(f"Computed n_steps: {n_steps}")
-    #     else:
-    #         assert n_steps > denoise_steps, "n_steps must be greater than denoise_steps"
-    #         speed = remaining_len / (n_steps - denoise_steps)
-    #         logger.info(f"Computed speed: {speed}")
-
-    #     schedule = t.ones(n_steps, seq_len)  # Initialize all to clean
-
-    #     # Only schedule denoising for tokens after start_from
-    #     for step in range(n_steps):
-    #         right_pos = start_from + step * speed
-    #         pos = t.arange(start_from, seq_len)
-    #         dist = (pos - right_pos) / (denoise_steps * speed)
-    #         schedule[step, start_from:] = (-dist).clamp(1e-3, 1)
-    #     return schedule
-
     @classmethod
     def make_rolling(
         cls,
@@ -195,13 +145,28 @@ class Schedule:
             speed = remaining_len / (n_steps - denoise_steps)
             logger.info(f"Computed speed: {speed}")
 
-        ratios = torch.ones((n_steps, seq_len))
-        ratio_value = final_signal_var ** (1 / denoise_steps)
+        noise_levels = torch.zeros((n_steps, seq_len))
+        # individual_ratios = torch.ones((denoise_steps,)) * final_signal_var ** (
+        #     1 / denoise_steps
+        # )
+
+        lef, rig = 0, 1
+        while rig - lef > 1e-9:
+            mid = (lef + rig) / 2
+            betas = mid * torch.arange(denoise_steps).float()
+            prod_alphas = torch.prod(1 - betas)
+            if prod_alphas > final_signal_var:
+                lef = mid
+            else:
+                rig = mid
+        mid = (lef + rig) / 2
+        logger.info(f"Base noise level: {mid}")
+        betas = mid * torch.arange(denoise_steps).float()
         for pos in range(start_from, seq_len):
             start_time = int((seq_len - pos) / speed)
             end_time = start_time + denoise_steps
-            ratios[start_time:end_time, pos] = ratio_value
-        return cls.from_signal_ratio(ratios)
+            noise_levels[start_time:end_time, pos] = betas
+        return cls.from_noise_level(noise_levels)
 
 
 @typed

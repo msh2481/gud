@@ -97,6 +97,7 @@ def train(
             pred_noise = model(xt, signal_var)
             delta_var = signal_var * (1 - signal_ratio)
             loss = ((pred_noise - noise).square() * delta_var).sum()
+            # loss = (pred_noise - noise).square().sum()
 
             opt.zero_grad()
             loss.backward()
@@ -166,8 +167,8 @@ def do_sample(
 def train_denoiser(
     output_path: str = "denoiser.pt",
     epochs: int = 100,
-    batch_size: int = 32,
-    dataset_size: int = 1000,
+    batch_size: int = 8,
+    dataset_size: int = 4000,
     seq_len: int = SEQ_LEN,
     chaos_ratio: float = 1.0,
     device: str | None = None,
