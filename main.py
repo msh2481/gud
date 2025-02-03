@@ -132,7 +132,8 @@ def do_sample(
         curr_var = schedule.signal_var[it + 1]
         assert not curr_var.isnan().any(), f"curr_var is nan at it={it}"
         alpha = schedule.signal_ratio[it + 1]
-        beta = schedule.noise_level[it + 1]
+        beta_cur = schedule.noise_level[it + 1]
+        beta_next = schedule.noise_level[it]
         x_cur = xs[:, it + 1]
         assert not x_cur.isnan().any(), f"x_cur is nan at it={it}"
         pred_noise = model(x_cur, curr_var.repeat(batch_size, 1))
@@ -145,7 +146,7 @@ def do_sample(
         assert not pred_noise.isnan().any(), f"pred_noise is nan at it={it}"
         upscale_coef = 1 / torch.sqrt(alpha)
         assert not torch.isnan(upscale_coef).any(), f"upscale_coef is nan at it={it}"
-        noise_coef = beta / (torch.sqrt(1 - curr_var) + eps)
+        noise_coef = beta_cur / (torch.sqrt(1 - curr_var) + eps)
         assert not torch.isnan(noise_coef).any(), f"noise_coef is nan at it={it}"
         # logger.info(f"beta: {beta}")
         # logger.info(f"sqrt(1 - curr_var): {torch.sqrt(1 - curr_var)}")
@@ -155,7 +156,7 @@ def do_sample(
         assert not torch.isnan(x_new).any(), f"x_new is nan at it={it}"
 
         if it < n_steps - 2:
-            x_new = x_new + torch.sqrt(beta) * torch.randn_like(x_new)
+            x_new = x_new + torch.sqrt(beta_next) * torch.randn_like(x_new)
             assert not torch.isnan(x_new).any(), f"x_new' is nan at it={it}"
         xs[:, it] = x_new
 
@@ -328,5 +329,5 @@ def test_model():
 
 if __name__ == "__main__":
     # train_denoiser()
-    # sample()
-    test_model()
+    sample()
+    # test_model()
