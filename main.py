@@ -17,10 +17,14 @@ from torch.utils.data import DataLoader, Dataset
 from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
+SEQ_LEN = 20
+DENOISE_STEPS = 10
+START_FROM = 3
 
 
 class DenoiserConv(nn.Module):
-    def __init__(self, window_size=5):
+    @typed
+    def __init__(self, window_size: int):
         super().__init__()
         self.window_size = window_size
         # Use padding=0 and manually pad on the left
@@ -45,14 +49,25 @@ class DenoiserConv(nn.Module):
         Returns:
             [batch_size, seq_len] predicted noise
         """
+        # Mock solution
+        shifted = torch.zeros_like(noisy_seq)
+        shifted[:, 1:] = noisy_seq[:, :-1]
+        gt = (shifted + 0.1) % 1.0
+        eps = 1e-8
+        # noisy_seq = gt * sqrt(signal_var) + noise * sqrt(1 - signal_var)
+        noise = (noisy_seq - gt * torch.sqrt(signal_var)) / (
+            torch.sqrt(1 - signal_var) + eps
+        )
+
         # Stack inputs as channels
         x = torch.stack([noisy_seq, signal_var], dim=1)  # [batch, 2, seq_len]
         # Add causal padding on the left
         pad_size = self.window_size - 1
         x = F.pad(x, (pad_size, 0), mode="constant", value=0)
         x = self.conv(x)
-        x = self.mlp(x)
-        return x.squeeze(1)
+        x = self.mlp(x).squeeze(1)
+        assert x.shape == noise.shape
+        return x * 1e-9 + noise
 
 
 @typed
@@ -109,7 +124,7 @@ def do_sample(
     xs = torch.zeros(batch_size, n_steps, seq_len, device=device)
     xs[:, -1] = x_t
     eps = 1e-8
-    noise_clip = 3.0
+    noise_clip = 5.0
 
     for it in reversed(range(n_steps - 1)):
         curr_var = schedule.signal_var[it + 1]
@@ -130,8 +145,9 @@ def do_sample(
         assert not torch.isnan(upscale_coef).any(), f"upscale_coef is nan at it={it}"
         noise_coef = beta / (torch.sqrt(1 - curr_var) + eps)
         assert not torch.isnan(noise_coef).any(), f"noise_coef is nan at it={it}"
-        logger.info(f"beta: {beta}")
-        logger.info(f"sqrt(1 - curr_var): {torch.sqrt(1 - curr_var)}")
+        # logger.info(f"beta: {beta}")
+        # logger.info(f"sqrt(1 - curr_var): {torch.sqrt(1 - curr_var)}")
+        # logger.info(f"noise_coef: {noise_coef}")
         assert (noise_coef <= 1).all(), f"noise_coef is greater than 1 at it={it}"
         x_new = upscale_coef * (x_cur - noise_coef * pred_noise)
         assert not torch.isnan(x_new).any(), f"x_new is nan at it={it}"
@@ -149,7 +165,7 @@ def train_denoiser(
     epochs: int = 100,
     batch_size: int = 32,
     dataset_size: int = 1000,
-    seq_len: int = 10,
+    seq_len: int = SEQ_LEN,
     chaos_ratio: float = 1.0,
     device: str | None = None,
     seed: int = 42,
@@ -157,7 +173,7 @@ def train_denoiser(
     """Train the denoising model"""
     set_seed(seed)
     if device is None:
-        device = "cuda" if t.cuda.is_available() else "cpu"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {device}")
 
     # Initialize model
@@ -167,9 +183,9 @@ def train_denoiser(
     clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=chaos_ratio)
     schedule = Schedule.make_rolling(
         seq_len,
-        speed=1.0,
-        denoise_steps=1,
-        start_from=3,
+        speed=1 / DENOISE_STEPS,
+        denoise_steps=DENOISE_STEPS,
+        start_from=START_FROM,
     )
     dataset = DiffusionDataset(clean_data, schedule)
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -194,7 +210,7 @@ def train_denoiser(
 
 def sample(
     model_path: str = "denoiser.pt",
-    seq_len: int = 10,
+    seq_len: int = SEQ_LEN,
     chaos_ratio: float = 1.0,
     schedule: Schedule | None = None,
     device: str | None = None,
@@ -226,9 +242,9 @@ def sample(
         # Create schedule
         schedule = Schedule.make_rolling(
             seq_len=seq_len,
-            speed=1.0,
-            denoise_steps=1,
-            start_from=3,
+            speed=1 / DENOISE_STEPS,
+            denoise_steps=DENOISE_STEPS,
+            start_from=START_FROM,
         )
         visualize_schedule(schedule)
         schedule = schedule.to(device)
@@ -236,8 +252,10 @@ def sample(
 
         # Sample
         signal_var = schedule.signal_var[-1]
-        xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(
-            1 - signal_var
+        # TODO: remove *0
+        xt = (
+            x0 * torch.sqrt(signal_var)
+            + torch.randn_like(x0) * torch.sqrt(1 - signal_var) * 0
         )
         samples = do_sample(model, xt, schedule)
         logger.info(f"Generated samples shape: {samples.shape}")
@@ -283,12 +301,12 @@ def test_model():
     model.eval()
     with torch.no_grad():
         schedule = Schedule.make_rolling(
-            seq_len=10,
-            speed=1.0,
-            denoise_steps=1,
-            start_from=3,
+            seq_len=SEQ_LEN,
+            speed=1 / DENOISE_STEPS,
+            denoise_steps=DENOISE_STEPS,
+            start_from=START_FROM,
         )
-        x0 = gen_dataset(1, 10, chaos_ratio=1.0)[0]
+        x0 = gen_dataset(1, SEQ_LEN, chaos_ratio=1.0)[0]
         x0 = x0.unsqueeze(0).to(device)
         schedule = schedule.to(device)
         for t in range(len(schedule.signal_var) - 1):
