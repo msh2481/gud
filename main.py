@@ -325,6 +325,6 @@ def test_model():
 
 
 if __name__ == "__main__":
-    train_denoiser()
-    # sample()
+    # train_denoiser()
+    sample()
     # test_model()
