@@ -255,11 +255,9 @@ def sample(
 
         # Sample
         signal_var = schedule.signal_var[-1]
-        # TODO: remove *0
-        xt = (
-            x0 * torch.sqrt(signal_var)
-            + torch.randn_like(x0) * torch.sqrt(1 - signal_var) * 0
-        )
+        xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(
+            1 - signal_var
+        )  # * 0
         samples = do_sample(model, xt, schedule)
         logger.info(f"Generated samples shape: {samples.shape}")
 
@@ -317,9 +315,8 @@ def test_model():
             big_var = schedule.signal_var[t]
             small_var = schedule.signal_var[t + 1]
             ratio = schedule.signal_ratio[t + 1]
-            xt = (
-                x0 * torch.sqrt(small_var)
-                + torch.randn_like(x0) * torch.sqrt(1 - small_var) * 0
+            xt = x0 * torch.sqrt(small_var) + torch.randn_like(x0) * torch.sqrt(
+                1 - small_var
             )
             logger.info(f"xt shape: {xt.shape} | small_var shape: {small_var.shape}")
             pred_noise = model(xt, small_var.repeat(1, 1))
