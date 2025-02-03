@@ -2,9 +2,8 @@ from pathlib import Path
 from typing import Annotated
 
 import numpy as np
-import torch as t
+import torch
 import torch.nn.functional as F
-import typer
 from beartype import beartype as typed
 from data import DiffusionDataset, gen_dataset
 from jaxtyping import Float
@@ -17,7 +16,6 @@ from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 from utils import set_seed
 
-TRAIN_MODEL = True
 MODEL_PATH = "denoiser.pt"
 
 
@@ -48,7 +46,7 @@ class DenoiserConv(nn.Module):
             [batch_size, seq_len] predicted noise
         """
         # Stack inputs as channels
-        x = t.stack([noisy_seq, signal_var], dim=1)  # [batch, 2, seq_len]
+        x = torch.stack([noisy_seq, signal_var], dim=1)  # [batch, 2, seq_len]
         # Add causal padding on the left
         pad_size = self.window_size - 1
         x = F.pad(x, (pad_size, 0), mode="constant", value=0)
@@ -67,19 +65,21 @@ def train(
 ) -> list[float]:
     """Train model and return loss history"""
     model.to(device)
-    opt = t.optim.Adam(model.parameters(), lr=lr)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
     losses = []
 
     for epoch in range(num_epochs):
         epoch_losses = []
-        for xt, signal_var, noise in train_loader:
-            xt, signal_var, noise = (
+        for xt, signal_var, signal_ratio, noise in train_loader:
+            xt, signal_var, signal_ratio, noise = (
                 xt.to(device),
                 signal_var.to(device),
+                signal_ratio.to(device),
                 noise.to(device),
             )
             pred_noise = model(xt, signal_var)
-            loss = F.mse_loss(pred_noise, noise)
+            delta_var = signal_var * (1 - signal_ratio)
+            loss = ((pred_noise - noise).square() * delta_var).sum()
 
             opt.zero_grad()
             loss.backward()
@@ -106,25 +106,40 @@ def do_sample(
     batch_size, seq_len = x_t.shape
 
     # Store all intermediate steps [batch, n_steps, seq_len]
-    xs = t.zeros(batch_size, n_steps, seq_len, device=device)
+    xs = torch.zeros(batch_size, n_steps, seq_len, device=device)
     xs[:, -1] = x_t
     eps = 1e-8
+    noise_clip = 3.0
 
     for it in reversed(range(n_steps - 1)):
-        curr_var = schedule.signal_var[it]
+        curr_var = schedule.signal_var[it + 1]
+        assert not curr_var.isnan().any(), f"curr_var is nan at it={it}"
         alpha = schedule.signal_ratio[it + 1]
         beta = schedule.noise_level[it + 1]
-        x_cur = xs[:, it]
+        x_cur = xs[:, it + 1]
         assert not x_cur.isnan().any(), f"x_cur is nan at it={it}"
         pred_noise = model(x_cur, curr_var.repeat(batch_size, 1))
-
-        upscale_coef = 1 / t.sqrt(alpha)
-        noise_coef = beta / (t.sqrt(1 - curr_var) + eps)
+        max_noise = torch.max(torch.abs(pred_noise))
+        if max_noise > noise_clip:
+            logger.warning(
+                f"Max noise at it={it} is {max_noise}, clipping to {noise_clip}"
+            )
+            pred_noise = pred_noise.clamp(-noise_clip, noise_clip)
+        assert not pred_noise.isnan().any(), f"pred_noise is nan at it={it}"
+        upscale_coef = 1 / torch.sqrt(alpha)
+        assert not torch.isnan(upscale_coef).any(), f"upscale_coef is nan at it={it}"
+        noise_coef = beta / (torch.sqrt(1 - curr_var) + eps)
+        assert not torch.isnan(noise_coef).any(), f"noise_coef is nan at it={it}"
+        logger.info(f"beta: {beta}")
+        logger.info(f"sqrt(1 - curr_var): {torch.sqrt(1 - curr_var)}")
+        assert (noise_coef <= 1).all(), f"noise_coef is greater than 1 at it={it}"
         x_new = upscale_coef * (x_cur - noise_coef * pred_noise)
+        assert not torch.isnan(x_new).any(), f"x_new is nan at it={it}"
 
         if it < n_steps - 2:
-            x_new = x_new + t.sqrt(beta) * t.randn_like(x_new)
-        xs[:, it + 1] = x_new
+            x_new = x_new + torch.sqrt(beta) * torch.randn_like(x_new)
+            assert not torch.isnan(x_new).any(), f"x_new' is nan at it={it}"
+        xs[:, it] = x_new
 
     return xs.flip(dims=[1])
 
@@ -134,7 +149,7 @@ def train_denoiser(
     epochs: int = 100,
     batch_size: int = 32,
     dataset_size: int = 1000,
-    seq_len: int = 100,
+    seq_len: int = 10,
     chaos_ratio: float = 1.0,
     device: str | None = None,
     seed: int = 42,
@@ -173,22 +188,13 @@ def train_denoiser(
 
     # Save model
     model.cpu()
-    t.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "seed": seed,
-            "chaos_ratio": chaos_ratio,
-            "seq_len": seq_len,
-            "epochs": epochs,
-        },
-        output_path,
-    )
+    torch.save(model.state_dict(), output_path)
     logger.info(f"Model saved to {output_path}")
 
 
 def sample(
     model_path: str = "denoiser.pt",
-    seq_len: int = 6,
+    seq_len: int = 10,
     chaos_ratio: float = 1.0,
     schedule: Schedule | None = None,
     device: str | None = None,
@@ -198,7 +204,7 @@ def sample(
     """Sample from a trained model"""
     set_seed(seed)
     if device is None:
-        device = "cuda" if t.cuda.is_available() else "cpu"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {device}")
 
     # Load model
@@ -206,29 +212,22 @@ def sample(
     if not Path(model_path).exists():
         raise FileNotFoundError(f"Model file {model_path} not found")
 
-    checkpoint = t.load(model_path)
-    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
-        logger.info(
-            f"Loaded model trained with seed={checkpoint.get('seed')}, "
-            f"chaos_ratio={checkpoint.get('chaos_ratio')}"
-        )
-    else:
-        model.load_state_dict(checkpoint)
-        logger.info("Loaded legacy model format")
+    checkpoint = torch.load(model_path)
+    model.load_state_dict(checkpoint)
+    logger.info("Loaded legacy model format")
 
     model.to(device).eval()
 
-    with t.no_grad():
+    with torch.no_grad():
         # Generate input sequence
-        xt = gen_dataset(1, seq_len, chaos_ratio=chaos_ratio)[0]
-        xt = xt.unsqueeze(0).to(device)
+        x0 = gen_dataset(1, seq_len, chaos_ratio=chaos_ratio)[0]
+        x0 = x0.unsqueeze(0).to(device)
 
         # Create schedule
         schedule = Schedule.make_rolling(
             seq_len=seq_len,
-            speed=0.2,
-            denoise_steps=5,
+            speed=1.0,
+            denoise_steps=1,
             start_from=3,
         )
         visualize_schedule(schedule)
@@ -236,6 +235,10 @@ def sample(
         logger.info(f"Schedule shape: {schedule.signal_var.shape}")
 
         # Sample
+        signal_var = schedule.signal_var[-1]
+        xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(
+            1 - signal_var
+        )
         samples = do_sample(model, xt, schedule)
         logger.info(f"Generated samples shape: {samples.shape}")
 
@@ -269,6 +272,41 @@ def sample(
         logger.info(f"Animation saved to {output_path}")
 
 
+def test_model():
+    model = DenoiserConv(window_size=2)
+    model.load_state_dict(torch.load("denoiser.pt"))
+    seed = 42
+    set_seed(seed)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
+    model.to(device)
+    model.eval()
+    with torch.no_grad():
+        schedule = Schedule.make_rolling(
+            seq_len=10,
+            speed=1.0,
+            denoise_steps=1,
+            start_from=3,
+        )
+        x0 = gen_dataset(1, 10, chaos_ratio=1.0)[0]
+        x0 = x0.unsqueeze(0).to(device)
+        schedule = schedule.to(device)
+        for t in range(len(schedule.signal_var) - 1):
+            print("\n\n")
+            big_var = schedule.signal_var[t]
+            small_var = schedule.signal_var[t + 1]
+            ratio = schedule.signal_ratio[t + 1]
+            xt = (
+                x0 * torch.sqrt(small_var)
+                + torch.randn_like(x0) * torch.sqrt(1 - small_var) * 0
+            )
+            logger.info(f"xt shape: {xt.shape} | small_var shape: {small_var.shape}")
+            pred_noise = model(xt, small_var.repeat(1, 1))
+            print(pred_noise.shape)
+            print(pred_noise)
+
+
 if __name__ == "__main__":
     # train_denoiser()
     sample()
+    # test_model()

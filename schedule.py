@@ -45,9 +45,9 @@ class Schedule:
         )
 
     @typed
-    def sample_signal_var(self) -> Float[TT, "seq_len"]:
+    def sample_signal_var(self) -> tuple[Float[TT, "seq_len"], Float[TT, "seq_len"]]:
         pos = torch.randint(1, self.signal_var.shape[0], ())
-        return self.signal_var[pos]
+        return self.signal_var[pos], self.signal_ratio[pos]
 
     @typed
     def assert_invariants(self):

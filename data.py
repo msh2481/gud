@@ -38,13 +38,14 @@ class DiffusionDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[
         Float[TT, "seq_len"],  # xt
         Float[TT, "seq_len"],  # signal_var
+        Float[TT, "seq_len"],  # signal_ratio
         Float[TT, "seq_len"],  # noise
     ]:
         x0 = self.data[idx]
-        signal_var = self.schedule.sample_signal_var()
+        signal_var, signal_ratio = self.schedule.sample_signal_var()
         noise = torch.randn_like(x0)
         xt = torch.sqrt(signal_var) * x0 + torch.sqrt(1 - signal_var) * noise
-        return xt, signal_var, noise
+        return xt, signal_var, signal_ratio, noise
 
     def __len__(self):
         return len(self.data)
@@ -90,9 +91,10 @@ def visualize_dataset():
     visualize_schedule(schedule)
     dataset = DiffusionDataset(clean_data, schedule)
     for _ in range(3):
-        xt, signal_var, noise = dataset[0]
+        xt, signal_var, signal_ratio, noise = dataset[0]
         plt.plot(xt, label=f"xt")
         plt.plot(signal_var, label=f"signal_var")
+        plt.plot(signal_ratio, label=f"signal_ratio")
         plt.plot(noise, label=f"noise")
         plt.legend()
         plt.show()
