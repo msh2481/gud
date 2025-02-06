@@ -83,23 +83,25 @@ class Denoiser(nn.Module):
         self,
         noisy_seq: Float[TT, "batch seq_len"],
         signal_var: Float[TT, "batch seq_len"],
+        signal_ratio: Float[TT, "batch seq_len"],
     ) -> Float[TT, "batch seq_len"]:
         """
         Args:
             noisy_seq: [batch_size, seq_len]
             signal_var: [batch_size, seq_len] - remaining signal variance per position
+            signal_ratio: [batch_size, seq_len] - signal ratio per position
         Returns:
             [batch_size, seq_len] predicted noise
         """
-        # Stack inputs as features
-        x = torch.stack([noisy_seq, signal_var], dim=-1)  # [batch, seq_len, 2]
-        # Project to d_model dimension
+        signal_delta = signal_var * (1 - signal_ratio)
+        # If position is noisy and we don't try to denoise it as this step, just ignore it
+        useless_noise = ((signal_var < 0.1) & (signal_delta < 1e-6)).float()
+        x = torch.stack(
+            [noisy_seq * (1 - useless_noise), signal_var], dim=-1
+        )  # [batch, seq_len, 2]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
-        # Add positional encodings
         x = x + self.pos_encoding
-        # Apply transformer
         x = self.transformer(x)  # [batch, seq_len, d_model]
-        # Project to output dimension
         x = self.output_proj(x)  # [batch, seq_len, 1]
         x = x.squeeze(-1)  # [batch, seq_len]
 
@@ -128,7 +130,7 @@ def train(
                 signal_ratio.to(device),
                 noise.to(device),
             )
-            pred_noise = model(xt, signal_var)
+            pred_noise = model(xt, signal_var, signal_ratio)
             delta_var = signal_var * (1 - signal_ratio)
             loss = ((pred_noise - noise).square() * delta_var).sum()
             # loss = (pred_noise - noise).square().sum()
@@ -171,7 +173,9 @@ def do_sample(
         beta_next = schedule.noise_level[it]
         x_cur = xs[:, it + 1]
         assert not x_cur.isnan().any(), f"x_cur is nan at it={it}"
-        pred_noise = model(x_cur, curr_var.repeat(batch_size, 1))
+        pred_noise = model(
+            x_cur, curr_var.repeat(batch_size, 1), alpha.repeat(batch_size, 1)
+        )
         max_noise = torch.max(torch.abs(pred_noise))
         if max_noise > noise_clip:
             logger.warning(
