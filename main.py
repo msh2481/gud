@@ -35,13 +35,10 @@ class Denoiser(nn.Module):
         dropout: float = 0.1,
     ):
         super().__init__()
-
-        # Input projection from 2 features to d_model
-        self.input_proj = nn.Linear(2, d_model)
-
         # Positional encoding
         self.pos_encoding = nn.Parameter(torch.zeros(1, SEQ_LEN, d_model))
-
+        # Input projection from 2 + pos features to d_model
+        self.input_proj = nn.Linear(2, d_model)
         # Transformer encoder layers
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -93,11 +90,8 @@ class Denoiser(nn.Module):
         Returns:
             [batch_size, seq_len] predicted noise
         """
-        signal_delta = signal_var * (1 - signal_ratio)
-        # If position is noisy and we don't try to denoise it as this step, just ignore it
-        useless_noise = ((signal_var < 0.1) & (signal_delta < 1e-6)).float()
         x = torch.stack(
-            [noisy_seq * (1 - useless_noise), signal_var], dim=-1
+            [noisy_seq, signal_var], dim=-1
         )  # [batch, seq_len, 2]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding
@@ -132,7 +126,7 @@ def train(
             )
             pred_noise = model(xt, signal_var, signal_ratio)
             delta_var = signal_var * (1 - signal_ratio)
-            loss = ((pred_noise - noise).square() * delta_var).sum()
+            loss = ((pred_noise - noise).square() * delta_var).mean(dim=0).sum()
             # loss = (pred_noise - noise).square().sum()
 
             opt.zero_grad()
@@ -205,7 +199,7 @@ def do_sample(
 def train_denoiser(
     output_path: str = "denoiser.pt",
     epochs: int = 100,
-    batch_size: int = 8,
+    batch_size: int = 32,
     dataset_size: int = 4000,
     seq_len: int = SEQ_LEN,
     chaos_ratio: float = 1.0,
@@ -219,7 +213,9 @@ def train_denoiser(
     logger.info(f"Using device: {device}")
 
     # Initialize model
-    model = Denoiser(d_model=256, n_heads=8, n_layers=4, dropout=0.1)
+    model = Denoiser(d_model=64, n_heads=8, n_layers=4, dropout=0.0)
+    n_parameters = sum(p.numel() for p in model.parameters())
+    logger.info(f"#params = {n_parameters}")
 
     # Generate dataset
     clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=chaos_ratio)
