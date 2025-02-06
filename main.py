@@ -24,6 +24,10 @@ SPEED = 4 / DENOISE_STEPS
 START_FROM = 3
 WINDOW_SIZE = 5
 
+D_MODEL = 64
+N_HEADS = 8
+N_LAYERS = 4
+DROPOUT = 0.0
 
 class Denoiser(nn.Module):
     @typed
@@ -213,7 +217,7 @@ def train_denoiser(
     logger.info(f"Using device: {device}")
 
     # Initialize model
-    model = Denoiser(d_model=64, n_heads=8, n_layers=4, dropout=0.0)
+    model = Denoiser(d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT)
     n_parameters = sum(p.numel() for p in model.parameters())
     logger.info(f"#params = {n_parameters}")
 
@@ -262,7 +266,7 @@ def sample(
     logger.info(f"Using device: {device}")
 
     # Load model
-    model = Denoiser(d_model=256, n_heads=8, n_layers=4, dropout=0.1)
+    model = Denoiser(d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT)
     if not Path(model_path).exists():
         raise FileNotFoundError(f"Model file {model_path} not found")
 
@@ -360,6 +364,6 @@ def test_model():
 
 
 if __name__ == "__main__":
-    train_denoiser()
-    # sample()
+    # train_denoiser()
+    sample()
     # test_model()
