@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from typing import Annotated
 
@@ -19,22 +20,63 @@ from utils import set_seed
 MODEL_PATH = "denoiser.pt"
 SEQ_LEN = 20
 DENOISE_STEPS = 10
+SPEED = 4 / DENOISE_STEPS
 START_FROM = 3
+WINDOW_SIZE = 5
 
 
-class DenoiserConv(nn.Module):
+class Denoiser(nn.Module):
     @typed
-    def __init__(self, window_size: int):
+    def __init__(
+        self,
+        d_model: int = 256,
+        n_heads: int = 8,
+        n_layers: int = 4,
+        dropout: float = 0.1,
+    ):
         super().__init__()
-        self.window_size = window_size
-        # Use padding=0 and manually pad on the left
-        self.conv = nn.Conv1d(2, 32, kernel_size=window_size, padding=0)
-        self.mlp = nn.Sequential(
-            nn.ReLU(),
-            nn.Conv1d(32, 64, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv1d(64, 1, kernel_size=1),
+
+        # Input projection from 2 features to d_model
+        self.input_proj = nn.Linear(2, d_model)
+
+        # Positional encoding
+        self.pos_encoding = nn.Parameter(torch.zeros(1, SEQ_LEN, d_model))
+
+        # Transformer encoder layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=4 * d_model,
+            dropout=dropout,
+            batch_first=True,  # [batch, seq, features]
+            norm_first=True,  # Better training stability
         )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+
+        # Output projection
+        self.output_proj = nn.Linear(d_model, 1)
+
+        # Initialize positional encodings
+        self._init_pos_encoding()
+
+    def _init_pos_encoding(self):
+        """Initialize positional encodings using sine/cosine functions"""
+        position = torch.arange(SEQ_LEN).unsqueeze(1)
+        div_term = torch.pi * torch.exp(
+            torch.arange(0, self.pos_encoding.size(-1), 2)
+            * (-math.log(1000.0) / self.pos_encoding.size(-1))
+        )
+        print("Div term: ", div_term[:10].detach().cpu().numpy())
+        pe = torch.zeros_like(self.pos_encoding[0])
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.pos_encoding.data.copy_(pe.unsqueeze(0))
+        # Show pos_encoding as a heatmap
+        plt.imshow(self.pos_encoding.detach().cpu().squeeze().numpy())
+        plt.colorbar()
+        plt.savefig("pos_encoding.png")
+        plt.close()
+        print(f"Saved pos_encoding.png with shape {self.pos_encoding.shape}")
 
     @typed
     def forward(
@@ -49,27 +91,19 @@ class DenoiserConv(nn.Module):
         Returns:
             [batch_size, seq_len] predicted noise
         """
-        # Mock solution
-        shifted = torch.zeros_like(noisy_seq)
-        shifted[:, 1:] = noisy_seq[:, :-1] / torch.sqrt(signal_var[:, :-1])
-        gt = (shifted + 0.1) % 1.0
-        # logger.info(f"noisy_seq: {noisy_seq}")
-        # logger.info(f"gt: {gt}")
-        eps = 1e-6
-        # noisy_seq = gt * sqrt(signal_var) + noise * sqrt(1 - signal_var)
-        noise = (noisy_seq - gt * torch.sqrt(signal_var)) / (
-            torch.sqrt(1 - signal_var) + eps
-        )
+        # Stack inputs as features
+        x = torch.stack([noisy_seq, signal_var], dim=-1)  # [batch, seq_len, 2]
+        # Project to d_model dimension
+        x = self.input_proj(x)  # [batch, seq_len, d_model]
+        # Add positional encodings
+        x = x + self.pos_encoding
+        # Apply transformer
+        x = self.transformer(x)  # [batch, seq_len, d_model]
+        # Project to output dimension
+        x = self.output_proj(x)  # [batch, seq_len, 1]
+        x = x.squeeze(-1)  # [batch, seq_len]
 
-        # Stack inputs as channels
-        x = torch.stack([noisy_seq, signal_var], dim=1)  # [batch, 2, seq_len]
-        # Add causal padding on the left
-        pad_size = self.window_size - 1
-        x = F.pad(x, (pad_size, 0), mode="constant", value=0)
-        x = self.conv(x)
-        x = self.mlp(x).squeeze(1)
-        assert x.shape == noise.shape
-        return x  # * 0.0 + noise
+        return x
 
 
 @typed
@@ -181,13 +215,13 @@ def train_denoiser(
     logger.info(f"Using device: {device}")
 
     # Initialize model
-    model = DenoiserConv(window_size=2)
+    model = Denoiser(d_model=256, n_heads=8, n_layers=4, dropout=0.1)
 
     # Generate dataset
     clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=chaos_ratio)
     schedule = Schedule.make_rolling(
         seq_len,
-        speed=1 / DENOISE_STEPS,
+        speed=SPEED,
         denoise_steps=DENOISE_STEPS,
         start_from=START_FROM,
     )
@@ -228,7 +262,7 @@ def sample(
     logger.info(f"Using device: {device}")
 
     # Load model
-    model = DenoiserConv(window_size=2)
+    model = Denoiser(d_model=256, n_heads=8, n_layers=4, dropout=0.1)
     if not Path(model_path).exists():
         raise FileNotFoundError(f"Model file {model_path} not found")
 
@@ -246,7 +280,7 @@ def sample(
         # Create schedule
         schedule = Schedule.make_rolling(
             seq_len=seq_len,
-            speed=1 / DENOISE_STEPS,
+            speed=SPEED,
             denoise_steps=DENOISE_STEPS,
             start_from=START_FROM,
         )
@@ -270,10 +304,10 @@ def sample(
 
         def update(frame):
             ax.clear()
-            colors = plt.cm.jet(np.linspace(0, 1, len(schedule.signal_var)))
+            # colors = plt.cm.jet(np.linspace(0, 1, len(schedule.signal_var)))
             for i in range(frame + 1):
-                alpha = 1.1 ** (i - frame)
-                ax.plot(samples[0, i].cpu(), color=colors[i], lw=0.5, alpha=alpha)
+                alpha = 1.5 ** (i - frame)
+                ax.plot(samples[0, i].cpu(), color="blue", lw=0.5, alpha=alpha)
             ax.set_title(
                 f"Denoising Steps (Step {frame + 1}/{len(schedule.signal_var)}, seed={seed})"
             )
@@ -283,7 +317,7 @@ def sample(
             fig,
             update,
             frames=len(schedule.signal_var),
-            interval=100,
+            interval=500,
             blit=False,
         )
 
@@ -293,7 +327,7 @@ def sample(
 
 
 def test_model():
-    model = DenoiserConv(window_size=2)
+    model = Denoiser(d_model=256, n_heads=8, n_layers=4, dropout=0.1)
     model.load_state_dict(torch.load("denoiser.pt"))
     seed = 42
     set_seed(seed)
@@ -304,7 +338,7 @@ def test_model():
     with torch.no_grad():
         schedule = Schedule.make_rolling(
             seq_len=SEQ_LEN,
-            speed=1 / DENOISE_STEPS,
+            speed=SPEED,
             denoise_steps=DENOISE_STEPS,
             start_from=START_FROM,
         )
@@ -326,6 +360,6 @@ def test_model():
 
 
 if __name__ == "__main__":
-    # train_denoiser()
-    sample()
+    train_denoiser()
+    # sample()
     # test_model()
