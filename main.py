@@ -2,11 +2,13 @@ import math
 from pathlib import Path
 from typing import Annotated
 
+import matplotlib.animation as animation
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
-from data import DiffusionDataset, gen_dataset
+from data import DiffusionDataset, LogisticMap
 from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -18,10 +20,10 @@ from torch.utils.data import DataLoader, Dataset
 from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
-SEQ_LEN = 20
+SEQ_LEN = 9
 DENOISE_STEPS = 10
 SPEED = 4 / DENOISE_STEPS
-START_FROM = 3
+START_FROM = 0
 WINDOW_SIZE = 5
 
 D_MODEL = 64
@@ -201,9 +203,9 @@ def do_sample(
 
 def train_denoiser(
     output_path: str = "denoiser.pt",
-    epochs: int = 20,
+    epochs: int = 100,
     batch_size: int = 32,
-    dataset_size: int = 4000,
+    dataset_size: int = 200,
     seq_len: int = SEQ_LEN,
     chaos_ratio: float = 1.0,
     device: str | None = None,
@@ -223,7 +225,12 @@ def train_denoiser(
     logger.info(f"#params = {n_parameters}")
 
     # Generate dataset
-    clean_data = gen_dataset(dataset_size, seq_len, chaos_ratio=chaos_ratio)
+    generator = LogisticMap.load(
+        length=SEQ_LEN, clauses=LogisticMap.complicated(), tolerance=1e-3
+    )
+    while len(generator) < dataset_size:
+        generator.sample(10)
+    clean_data = generator.data[:dataset_size]
     schedule = Schedule.make_rolling(
         seq_len,
         speed=SPEED,
@@ -251,39 +258,66 @@ def train_denoiser(
     logger.info(f"Model saved to {output_path}")
 
 
-def sample(
-    model_path: str = "denoiser.pt",
-    seq_len: int = SEQ_LEN,
-    chaos_ratio: float = 1.0,
-    schedule: Schedule | None = None,
-    device: str | None = None,
-    output_path: str = "denoising_animation.gif",
-    seed: int = 42,
-):
-    """Sample from a trained model"""
-    set_seed(seed)
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using device: {device}")
-
-    # Load model
+def load_model(model_path: str) -> tuple[nn.Module, str]:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     model = Denoiser(
         d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT
     )
     if not Path(model_path).exists():
         raise FileNotFoundError(f"Model file {model_path} not found")
-
     checkpoint = torch.load(model_path)
     model.load_state_dict(checkpoint)
-    logger.info("Loaded legacy model format")
-
     model.to(device).eval()
+    return model, device
 
+
+def create_animation(
+    samples: Float[TT, "batch n_steps seq_len"],
+    schedule: Schedule,
+    output_path: str,
+) -> None:
+    fig = plt.figure(figsize=(15, 5))
+    ax = plt.gca()
+
+    def update(frame):
+        ax.clear()
+        # colors = plt.cm.jet(np.linspace(0, 1, len(schedule.signal_var)))
+        for i in range(frame + 1):
+            alpha = 1.5 ** (i - frame)
+            ax.plot(samples[0, i].cpu(), color="blue", lw=0.5, alpha=alpha)
+        ax.set_title(f"Denoising Steps (Step {frame + 1}/{len(schedule.signal_var)}")
+        ax.axhline(y=0, color="black", lw=0.5)
+        ax.axhline(y=1, color="black", lw=0.5)
+        ax.set_ylim(-1, 2)
+
+    anim = animation.FuncAnimation(
+        fig,
+        update,
+        frames=len(schedule.signal_var),
+        interval=500,
+        blit=False,
+    )
+    anim.save(output_path, writer="pillow")
+    plt.close()
+    logger.info(f"Animation saved to {output_path}")
+
+
+def animated_sample(
+    model_path: str = "denoiser.pt",
+    seq_len: int = SEQ_LEN,
+    output_path: str = "denoising_animation.gif",
+    seed: int = 42,
+):
+    """Sample from a trained model"""
+    set_seed(seed)
+    model, device = load_model(model_path)
+    generator = LogisticMap.load(
+        length=SEQ_LEN, clauses=LogisticMap.complicated(), tolerance=1e-3
+    )
+    while len(generator) < 1:
+        generator.sample(10)
+    x0 = generator.data[0].unsqueeze(0).to(device)
     with torch.no_grad():
-        # Generate input sequence
-        x0 = gen_dataset(1, seq_len, chaos_ratio=chaos_ratio)[0]
-        x0 = x0.unsqueeze(0).to(device)
-
         # Create schedule
         schedule = Schedule.make_rolling(
             seq_len=seq_len,
@@ -291,84 +325,48 @@ def sample(
             denoise_steps=DENOISE_STEPS,
             start_from=START_FROM,
         )
-        visualize_schedule(schedule)
         schedule = schedule.to(device)
-        logger.info(f"Schedule shape: {schedule.signal_var.shape}")
-
-        # Sample
         signal_var = schedule.signal_var[-1]
         xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(
             1 - signal_var
-        )  # * 0
+        )
         samples = do_sample(model, xt, schedule)
-        logger.info(f"Generated samples shape: {samples.shape}")
-
-        # Create animation
-        import matplotlib.animation as animation
-
-        fig = plt.figure(figsize=(15, 5))
-        ax = plt.gca()
-
-        def update(frame):
-            ax.clear()
-            # colors = plt.cm.jet(np.linspace(0, 1, len(schedule.signal_var)))
-            for i in range(frame + 1):
-                alpha = 1.5 ** (i - frame)
-                ax.plot(samples[0, i].cpu(), color="blue", lw=0.5, alpha=alpha)
-            ax.set_title(
-                f"Denoising Steps (Step {frame + 1}/{len(schedule.signal_var)}, seed={seed})"
-            )
-            ax.axhline(y=0, color="black", lw=0.5)
-            ax.axhline(y=1, color="black", lw=0.5)
-            ax.set_ylim(-1, 2)
-
-        anim = animation.FuncAnimation(
-            fig,
-            update,
-            frames=len(schedule.signal_var),
-            interval=500,
-            blit=False,
-        )
-
-        anim.save(output_path, writer="pillow")
-        plt.close()
-        logger.info(f"Animation saved to {output_path}")
+        create_animation(samples, schedule, output_path)
 
 
-def test_model():
-    model = Denoiser(d_model=256, n_heads=8, n_layers=4, dropout=0.1)
-    model.load_state_dict(torch.load("denoiser.pt"))
-    seed = 42
-    set_seed(seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Using device: {device}")
-    model.to(device)
-    model.eval()
+def evaluate(
+    model_path: str = "denoiser.pt",
+    n_samples: int = 100,
+    seq_len: int = SEQ_LEN,
+    device: str | None = None,
+):
+    """Evaluate the model"""
+    model, device = load_model(model_path)
+    generator = LogisticMap.load(
+        length=SEQ_LEN, clauses=LogisticMap.complicated(), tolerance=1e-3
+    )
+    schedule = Schedule.make_rolling(
+        seq_len=seq_len,
+        speed=SPEED,
+        denoise_steps=DENOISE_STEPS,
+        start_from=START_FROM,
+    )
+    schedule = schedule.to(device)
+    signal_var = schedule.signal_var[-1]
+    print(signal_var)
+    assert signal_var.max() < 0.01 + 1e-8
     with torch.no_grad():
-        schedule = Schedule.make_rolling(
-            seq_len=SEQ_LEN,
-            speed=SPEED,
-            denoise_steps=DENOISE_STEPS,
-            start_from=START_FROM,
-        )
-        x0 = gen_dataset(1, SEQ_LEN, chaos_ratio=1.0)[0]
-        x0 = x0.unsqueeze(0).to(device)
-        schedule = schedule.to(device)
-        for t in range(len(schedule.signal_var) - 1):
-            print("\n\n")
-            big_var = schedule.signal_var[t]
-            small_var = schedule.signal_var[t + 1]
-            ratio = schedule.signal_ratio[t + 1]
-            xt = x0 * torch.sqrt(small_var) + torch.randn_like(x0) * torch.sqrt(
-                1 - small_var
-            )
-            logger.info(f"xt shape: {xt.shape} | small_var shape: {small_var.shape}")
-            pred_noise = model(xt, small_var.repeat(1, 1))
-            print(pred_noise.shape)
-            print(pred_noise)
+        xt = torch.randn((n_samples, seq_len))
+        samples = do_sample(model, xt, schedule)
+        n_steps = samples.shape[1]
+        for step in range(n_steps):
+            selection = samples[:, step]
+            losses = generator.loss(selection)
+            print(f"Step {step}: {losses.mean():.3f}")
 
 
 if __name__ == "__main__":
     # train_denoiser()
-    sample()
+    evaluate()
+    # animated_sample()
     # test_model()
