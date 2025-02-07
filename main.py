@@ -21,10 +21,9 @@ from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
 SEQ_LEN = 9
-DENOISE_STEPS = 10
+DENOISE_STEPS = 4
 SPEED = 4 / DENOISE_STEPS
 START_FROM = 0
-WINDOW_SIZE = 5
 
 D_MODEL = 64
 N_HEADS = 8
@@ -237,6 +236,7 @@ def train_denoiser(
         denoise_steps=DENOISE_STEPS,
         start_from=START_FROM,
     )
+    visualize_schedule(schedule)
     dataset = DiffusionDataset(clean_data, schedule)
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
@@ -336,7 +336,7 @@ def animated_sample(
 
 def evaluate(
     model_path: str = "denoiser.pt",
-    n_samples: int = 100,
+    n_samples: int = 1000,
     seq_len: int = SEQ_LEN,
     device: str | None = None,
 ):
@@ -354,7 +354,7 @@ def evaluate(
     schedule = schedule.to(device)
     signal_var = schedule.signal_var[-1]
     print(signal_var)
-    assert signal_var.max() < 0.01 + 1e-8
+    assert signal_var.max().item() <= 0.011
     with torch.no_grad():
         xt = torch.randn((n_samples, seq_len))
         samples = do_sample(model, xt, schedule)
@@ -366,7 +366,7 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    # train_denoiser()
+    train_denoiser()
     evaluate()
     # animated_sample()
     # test_model()

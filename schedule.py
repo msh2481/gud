@@ -146,14 +146,11 @@ class Schedule:
             logger.info(f"Computed speed: {speed}")
 
         noise_levels = torch.zeros((n_steps, seq_len))
-        # individual_ratios = torch.ones((denoise_steps,)) * final_signal_var ** (
-        #     1 / denoise_steps
-        # )
 
         lef, rig = 0, 1
         while rig - lef > 1e-9:
             mid = (lef + rig) / 2
-            betas = mid * torch.arange(denoise_steps).float()
+            betas = mid * torch.arange(1, denoise_steps + 1).float()
             prod_alphas = torch.prod(1 - betas)
             if prod_alphas > final_signal_var:
                 lef = mid
@@ -161,7 +158,7 @@ class Schedule:
                 rig = mid
         mid = (lef + rig) / 2
         logger.info(f"Base noise level: {mid}")
-        betas = mid * torch.arange(denoise_steps).float()
+        betas = mid * torch.arange(1, denoise_steps + 1).float()
         for pos in range(start_from, seq_len):
             start_time = int((seq_len - pos) / speed)
             end_time = start_time + denoise_steps
