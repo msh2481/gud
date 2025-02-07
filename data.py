@@ -26,6 +26,11 @@ class DataGenerator:
         self.init_params = params
         self.data = torch.zeros(0, params["length"])
 
+    @typed
+    def inspect(self) -> None:
+        for i in range(len(self)):
+            logger.info(f"#{i}: {self.loss(self.data[i:i+1]).item()}")
+
     @classmethod
     @typed
     def load(cls, **params) -> "DataGenerator":
@@ -73,15 +78,17 @@ class DataGenerator:
     ) -> Float[TT, "batch seq_len"]:
         x = self.random_init(batch_size)
         x = torch.tensor(x.data, requires_grad=True)
+        lr = 3e-4
+        opt = torch.optim.SGD([x], lr=lr, momentum=0.9)
         tolerance = self.init_params["tolerance"]
         for it in range(10**9):
-            lr = 0.01  # * 0.1 ** (it / 2000)
-            nr = 1e-2 * (2 * lr) ** 0.5
-            x.grad = None
+            nr = 1e-5 * (2 * lr) ** 0.5
+            opt.zero_grad()
             loss = self.loss(x).mean()
             loss.backward()
-            x.data -= lr * x.grad + nr * torch.randn_like(x)
-            if debug and it % 100 == 0:
+            opt.step()
+            x.data += nr * torch.randn_like(x)
+            if debug and it % 10000 == 0:
                 logger.debug(f"#{it}: {loss.item()} | {x.detach().numpy()}")
             if loss < tolerance and it % 2000 == 0:
                 break
@@ -113,6 +120,41 @@ class Zigzag(DataGenerator):
         return zigzag_loss + start_loss
 
 
+class LogisticMap(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def loss(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch"]:
+        clauses = self.init_params["clauses"]
+        loss = torch.zeros(x.shape[0])
+        for sources, target in clauses:
+            mean = x[:, sources].mean(dim=-1)
+            prediction = 3.993 * mean * (1 - mean)
+            loss = loss + (prediction - x[:, target]).square()
+        return loss
+
+    @classmethod
+    @typed
+    def linear(cls, n: int) -> list[tuple[list[int], int]]:
+        clauses = []
+        for i in range(1, n):
+            clauses.append(([i - 1], i))
+        return clauses
+
+    @classmethod
+    @typed
+    def complicated(cls) -> list[tuple[list[int], int]]:
+        clauses = [
+            ([0, 1], 6),
+            ([2, 3], 7),
+            ([4, 5], 8),
+            ([6, 7], 8),
+        ]
+        return clauses
+
+
 class DiffusionDataset(Dataset):
     @typed
     def __init__(self, data: Float[TT, "batch seq_len"], schedule: Schedule):
@@ -138,25 +180,27 @@ class DiffusionDataset(Dataset):
 
 @typed
 def visualize_data(
-    n_samples: int = 100,
+    n_samples: int = 200,
     seq_len: int = 10,
     chaos_ratio: float = 1.0,
     save_path: str | None = None,
     seed: int = 42,
 ):
     """Generate and visualize sample sequences"""
-    set_seed(seed)
-    generator = Zigzag.load(length=seq_len, tolerance=1e-3)
+    # set_seed(seed)
+    generator = LogisticMap.load(
+        length=9, clauses=LogisticMap.complicated(), tolerance=1e-3
+    )
+    generator.inspect()
     while len(generator) < n_samples:
-        generator.sample(1, debug=True)
+        generator.sample(10, debug=True)
     generator.append_to_save()
     data = generator.data[:n_samples]
 
     plt.figure(figsize=(15, 5))
     for i in range(n_samples):
-        plt.plot(data[i], label=f"Sample {i+1}", alpha=0.7)
+        plt.plot(data[i], alpha=0.2, lw=1, color="k")
     plt.title(f"Generated Sequences (chaos_ratio={chaos_ratio}, seed={seed})")
-    plt.legend()
 
     if save_path:
         plt.savefig(save_path)
