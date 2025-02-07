@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -16,16 +18,99 @@ from torch.utils.data import DataLoader, Dataset
 from utils import set_seed
 
 
-@typed
-def gen_dataset(
-    dataset_size: int, n: int, chaos_ratio: float = 0.5
-) -> Float[TT, "dataset_size n"]:
-    chaotic_part = torch.zeros((dataset_size, n))
-    chaotic_part[:, 0] = torch.rand(dataset_size)
-    for i in range(1, n):
-        chaotic_part[:, i] = (chaotic_part[:, i - 1] + 0.1) % 1.0  # r * x * (1 - x)
-    noise = torch.randn(dataset_size, n) + torch.randn(dataset_size, 1)
-    return chaotic_part * chaos_ratio + noise * (1 - chaos_ratio)
+class DataGenerator:
+    @typed
+    def __init__(self, **params) -> None:
+        assert "length" in params, "length is required"
+        assert "tolerance" in params, "tolerance is required"
+        self.init_params = params
+        self.data = torch.zeros(0, params["length"])
+
+    @classmethod
+    @typed
+    def load(cls, **params) -> "DataGenerator":
+        instance = cls(**params)
+        instance.data = instance._load()
+        return instance
+
+    @typed
+    def _hash(self) -> str:
+        return hashlib.md5(json.dumps(self.init_params).encode()).hexdigest()
+
+    @typed
+    def _save(self, data: Float[TT, "batch seq_len"]) -> None:
+        path = f"data/{self._hash()}.pt"
+        torch.save(data, path)
+        logger.info(f"Data saved to {path}")
+
+    @typed
+    def _load(self) -> Float[TT, "batch seq_len"]:
+        try:
+            path = f"data/{self._hash()}.pt"
+            result = torch.load(path)
+            logger.info(f"Data loaded from {path}")
+            return result
+        except FileNotFoundError:
+            logger.warning(f"Data not found in {path}, creating new data")
+            return torch.zeros(0, self.init_params["length"])
+
+    @typed
+    def append_to_save(self) -> None:
+        previous_data = self._load()
+        self._save(torch.cat([previous_data, self.data], dim=0))
+
+    @typed
+    def loss(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch"]:
+        raise NotImplementedError("Loss function must be implemented")
+
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.randn((batch_size, self.init_params["length"]))
+
+    @typed
+    def sample(
+        self, batch_size: int, debug: bool = False
+    ) -> Float[TT, "batch seq_len"]:
+        x = self.random_init(batch_size)
+        x = torch.tensor(x.data, requires_grad=True)
+        tolerance = self.init_params["tolerance"]
+        for it in range(10**9):
+            lr = 0.01  # * 0.1 ** (it / 2000)
+            nr = 1e-2 * (2 * lr) ** 0.5
+            x.grad = None
+            loss = self.loss(x).mean()
+            loss.backward()
+            x.data -= lr * x.grad + nr * torch.randn_like(x)
+            if debug and it % 100 == 0:
+                logger.debug(f"#{it}: {loss.item()} | {x.detach().numpy()}")
+            if loss < tolerance and it % 2000 == 0:
+                break
+        x = x.detach()
+        logger.debug(f"Final (loss={loss.item()}): {x.detach().numpy()}")
+        self.data = torch.cat([self.data, x], dim=0)
+        if debug:
+            logger.debug(
+                f"Sampled {batch_size} samples. New data size: {len(self.data)}"
+            )
+        return x
+
+    @typed
+    def __len__(self) -> int:
+        return len(self.data)
+
+
+class Zigzag(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> TT:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def loss(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch"]:
+        predictions = (x[:, :-1].detach() + 0.1) % 1.0
+        targets = x[:, 1:]
+        zigzag_loss = (predictions - targets).square().sum(dim=-1)
+        start_loss = (x[:, 0] - (x[:, 0] % 1.0).detach()).square().sum(dim=-1)
+        return zigzag_loss + start_loss
 
 
 class DiffusionDataset(Dataset):
@@ -53,15 +138,19 @@ class DiffusionDataset(Dataset):
 
 @typed
 def visualize_data(
-    n_samples: int = 5,
-    seq_len: int = 100,
+    n_samples: int = 100,
+    seq_len: int = 10,
     chaos_ratio: float = 1.0,
     save_path: str | None = None,
     seed: int = 42,
 ):
     """Generate and visualize sample sequences"""
     set_seed(seed)
-    data = gen_dataset(n_samples, seq_len, chaos_ratio=chaos_ratio)
+    generator = Zigzag.load(length=seq_len, tolerance=1e-3)
+    while len(generator) < n_samples:
+        generator.sample(1, debug=True)
+    generator.append_to_save()
+    data = generator.data[:n_samples]
 
     plt.figure(figsize=(15, 5))
     for i in range(n_samples):
@@ -84,7 +173,10 @@ def visualize_dataset():
     speed = 1.0
     denoise_steps = 2
     start_from = 3
-    clean_data = gen_dataset(dataset_size, seq_len, 1.0)
+    generator = Zigzag.load(length=seq_len, tolerance=1e-3)
+    while len(generator) < dataset_size:
+        generator.sample(10, debug=True)
+    clean_data = generator.data[:dataset_size]
     schedule = Schedule.make_rolling(
         seq_len, speed=speed, denoise_steps=denoise_steps, start_from=start_from
     )
@@ -101,4 +193,5 @@ def visualize_dataset():
 
 
 if __name__ == "__main__":
-    visualize_dataset()
+    visualize_data()
+    # visualize_dataset()

@@ -29,6 +29,7 @@ N_HEADS = 8
 N_LAYERS = 4
 DROPOUT = 0.0
 
+
 class Denoiser(nn.Module):
     @typed
     def __init__(
@@ -94,9 +95,7 @@ class Denoiser(nn.Module):
         Returns:
             [batch_size, seq_len] predicted noise
         """
-        x = torch.stack(
-            [noisy_seq, signal_var], dim=-1
-        )  # [batch, seq_len, 2]
+        x = torch.stack([noisy_seq, signal_var], dim=-1)  # [batch, seq_len, 2]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding
         x = self.transformer(x)  # [batch, seq_len, d_model]
@@ -202,7 +201,7 @@ def do_sample(
 
 def train_denoiser(
     output_path: str = "denoiser.pt",
-    epochs: int = 100,
+    epochs: int = 20,
     batch_size: int = 32,
     dataset_size: int = 4000,
     seq_len: int = SEQ_LEN,
@@ -217,7 +216,9 @@ def train_denoiser(
     logger.info(f"Using device: {device}")
 
     # Initialize model
-    model = Denoiser(d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT)
+    model = Denoiser(
+        d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT
+    )
     n_parameters = sum(p.numel() for p in model.parameters())
     logger.info(f"#params = {n_parameters}")
 
@@ -266,7 +267,9 @@ def sample(
     logger.info(f"Using device: {device}")
 
     # Load model
-    model = Denoiser(d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT)
+    model = Denoiser(
+        d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT
+    )
     if not Path(model_path).exists():
         raise FileNotFoundError(f"Model file {model_path} not found")
 
@@ -315,7 +318,9 @@ def sample(
             ax.set_title(
                 f"Denoising Steps (Step {frame + 1}/{len(schedule.signal_var)}, seed={seed})"
             )
-            ax.set_ylim(-3, 3)
+            ax.axhline(y=0, color="black", lw=0.5)
+            ax.axhline(y=1, color="black", lw=0.5)
+            ax.set_ylim(-1, 2)
 
         anim = animation.FuncAnimation(
             fig,
