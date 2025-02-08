@@ -145,12 +145,13 @@ class LogisticMap(DataGenerator):
 
     @classmethod
     @typed
-    def complicated(cls) -> list[tuple[list[int], int]]:
+    def complicated(cls, n: int) -> list[tuple[list[int], int]]:
+        assert n >= 9, "n must be at least 9"
         clauses = [
-            ([0, 1], 6),
-            ([2, 3], 7),
-            ([4, 5], 8),
-            ([6, 7], 8),
+            ([0, 1], n - 3),
+            ([2, 3], n - 2),
+            ([4, 5], n - 1),
+            ([n - 3, n - 2], n - 1),
         ]
         return clauses
 
@@ -181,7 +182,7 @@ class DiffusionDataset(Dataset):
 @typed
 def visualize_data(
     n_samples: int = 200,
-    seq_len: int = 10,
+    seq_len: int = 20,
     chaos_ratio: float = 1.0,
     save_path: str | None = None,
     seed: int = 42,
@@ -189,7 +190,7 @@ def visualize_data(
     """Generate and visualize sample sequences"""
     # set_seed(seed)
     generator = LogisticMap.load(
-        length=9, clauses=LogisticMap.complicated(), tolerance=1e-3
+        length=seq_len, clauses=LogisticMap.complicated(seq_len), tolerance=1e-3
     )
     generator.inspect()
     while len(generator) < n_samples:

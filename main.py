@@ -20,9 +20,9 @@ from torch.utils.data import DataLoader, Dataset
 from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
-SEQ_LEN = 9
-DENOISE_STEPS = 4
-SPEED = 4 / DENOISE_STEPS
+SEQ_LEN = 20
+DENOISE_STEPS = 1
+SPEED = 1 / DENOISE_STEPS  # 4 / DENOISE_STEPS
 START_FROM = 0
 
 D_MODEL = 64
@@ -129,7 +129,7 @@ def train(
                 noise.to(device),
             )
             pred_noise = model(xt, signal_var, signal_ratio)
-            delta_var = signal_var * (1 - signal_ratio)
+            delta_var = signal_var * (1 / (signal_ratio + 1e-8) - 1)
             loss = ((pred_noise - noise).square() * delta_var).mean(dim=0).sum()
             # loss = (pred_noise - noise).square().sum()
 
@@ -225,7 +225,7 @@ def train_denoiser(
 
     # Generate dataset
     generator = LogisticMap.load(
-        length=SEQ_LEN, clauses=LogisticMap.complicated(), tolerance=1e-3
+        length=SEQ_LEN, clauses=LogisticMap.complicated(SEQ_LEN), tolerance=1e-3
     )
     while len(generator) < dataset_size:
         generator.sample(10)
@@ -312,7 +312,7 @@ def animated_sample(
     set_seed(seed)
     model, device = load_model(model_path)
     generator = LogisticMap.load(
-        length=SEQ_LEN, clauses=LogisticMap.complicated(), tolerance=1e-3
+        length=SEQ_LEN, clauses=LogisticMap.complicated(SEQ_LEN), tolerance=1e-3
     )
     while len(generator) < 1:
         generator.sample(10)
@@ -343,7 +343,7 @@ def evaluate(
     """Evaluate the model"""
     model, device = load_model(model_path)
     generator = LogisticMap.load(
-        length=SEQ_LEN, clauses=LogisticMap.complicated(), tolerance=1e-3
+        length=SEQ_LEN, clauses=LogisticMap.complicated(SEQ_LEN), tolerance=1e-3
     )
     schedule = Schedule.make_rolling(
         seq_len=seq_len,
