@@ -65,8 +65,14 @@ class DataGenerator:
         self._save(torch.cat([previous_data, self.data], dim=0))
 
     @typed
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
+        raise NotImplementedError("Losses per clause must be implemented")
+
+    @typed
     def loss(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch"]:
-        raise NotImplementedError("Loss function must be implemented")
+        return self.losses_per_clause(x).sum(dim=-1)
 
     @typed
     def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
@@ -112,12 +118,13 @@ class Zigzag(DataGenerator):
         return torch.rand((batch_size, self.init_params["length"]))
 
     @typed
-    def loss(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch"]:
+    def loss_per_clause(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch 1"]:
         predictions = (x[:, :-1].detach() + 0.1) % 1.0
         targets = x[:, 1:]
         zigzag_loss = (predictions - targets).square().sum(dim=-1)
         start_loss = (x[:, 0] - (x[:, 0] % 1.0).detach()).square().sum(dim=-1)
-        return zigzag_loss + start_loss
+        result = zigzag_loss + start_loss
+        return result[:, None]
 
 
 class LogisticMap(DataGenerator):
@@ -126,14 +133,14 @@ class LogisticMap(DataGenerator):
         return torch.rand((batch_size, self.init_params["length"]))
 
     @typed
-    def loss(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch"]:
+    def losses_per_clause(self, x: TT) -> TT:
         clauses = self.init_params["clauses"]
-        loss = torch.zeros(x.shape[0])
-        for sources, target in clauses:
+        results = torch.zeros(x.shape[0], len(clauses))
+        for i, (sources, target) in enumerate(clauses):
             mean = x[:, sources].mean(dim=-1)
-            prediction = 3.993 * mean * (1 - mean)
-            loss = loss + (prediction - x[:, target]).square()
-        return loss
+            prediction = 1 - mean  # * mean * 3.993
+            results[:, i] = (prediction - x[:, target]).square()
+        return results
 
     @classmethod
     @typed
@@ -190,7 +197,7 @@ def visualize_data(
     """Generate and visualize sample sequences"""
     # set_seed(seed)
     generator = LogisticMap.load(
-        length=seq_len, clauses=LogisticMap.complicated(seq_len), tolerance=1e-3
+        length=seq_len, clauses=LogisticMap.complicated(seq_len), tolerance=1e-4
     )
     generator.inspect()
     while len(generator) < n_samples:
@@ -218,7 +225,7 @@ def visualize_dataset():
     speed = 1.0
     denoise_steps = 2
     start_from = 3
-    generator = Zigzag.load(length=seq_len, tolerance=1e-3)
+    generator = Zigzag.load(length=seq_len, tolerance=1e-4)
     while len(generator) < dataset_size:
         generator.sample(10, debug=True)
     clean_data = generator.data[:dataset_size]

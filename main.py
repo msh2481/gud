@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
-from data import DiffusionDataset, LogisticMap
+from data import DataGenerator, DiffusionDataset, LogisticMap
 from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -21,13 +21,13 @@ from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
 SEQ_LEN = 20
-DENOISE_STEPS = 1
-SPEED = 1 / DENOISE_STEPS  # 4 / DENOISE_STEPS
+DENOISE_STEPS = 100
+SPEED = 100  # 4 / DENOISE_STEPS
 START_FROM = 0
 
-D_MODEL = 64
+D_MODEL = 32
 N_HEADS = 8
-N_LAYERS = 4
+N_LAYERS = 10
 DROPOUT = 0.0
 
 
@@ -275,6 +275,7 @@ def create_animation(
     samples: Float[TT, "batch n_steps seq_len"],
     schedule: Schedule,
     output_path: str,
+    generator: DataGenerator,
 ) -> None:
     fig = plt.figure(figsize=(15, 5))
     ax = plt.gca()
@@ -285,7 +286,14 @@ def create_animation(
         for i in range(frame + 1):
             alpha = 1.5 ** (i - frame)
             ax.plot(samples[0, i].cpu(), color="blue", lw=0.5, alpha=alpha)
-        ax.set_title(f"Denoising Steps (Step {frame + 1}/{len(schedule.signal_var)}")
+        current = samples[:1, frame]
+        assert current.shape == (1, SEQ_LEN)
+        losses = generator.losses_per_clause(current)[0].detach().cpu().numpy()
+        losses_str = " ".join(f"{loss:.3f}" for loss in losses)
+        ax.set_title(
+            f"Denoising Steps (Step {frame + 1}/{len(schedule.signal_var)})"
+            f"\nLosses: {losses_str}"
+        )
         ax.axhline(y=0, color="black", lw=0.5)
         ax.axhline(y=1, color="black", lw=0.5)
         ax.set_ylim(-1, 2)
@@ -331,7 +339,7 @@ def animated_sample(
             1 - signal_var
         )
         samples = do_sample(model, xt, schedule)
-        create_animation(samples, schedule, output_path)
+        create_animation(samples, schedule, output_path, generator)
 
 
 def evaluate(
@@ -362,11 +370,16 @@ def evaluate(
         for step in range(n_steps):
             selection = samples[:, step]
             losses = generator.loss(selection)
-            print(f"Step {step}: {losses.mean():.3f}")
+            q25 = losses.quantile(0.25)
+            q50 = losses.quantile(0.50)
+            q75 = losses.quantile(0.75)
+            print(
+                f"Step {step}: {losses.mean():.3f} (q25={q25:.3f}, q50={q50:.3f}, q75={q75:.3f})"
+            )
 
 
 if __name__ == "__main__":
     train_denoiser()
     evaluate()
-    # animated_sample()
+    # animated_sampleload()
     # test_model()
