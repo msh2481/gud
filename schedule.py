@@ -139,11 +139,11 @@ class Schedule:
 
         if n_steps is None:
             n_steps = int(remaining_len / speed + denoise_steps)
-            logger.info(f"Computed n_steps: {n_steps}")
+            # logger.debug(f"Computed n_steps: {n_steps}")
         else:
             assert n_steps > denoise_steps, "n_steps must be greater than denoise_steps"
             speed = remaining_len / (n_steps - denoise_steps)
-            logger.info(f"Computed speed: {speed}")
+            # logger.debug(f"Computed speed: {speed}")
 
         noise_levels = torch.zeros((n_steps, seq_len))
 

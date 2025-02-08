@@ -21,14 +21,14 @@ from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
 SEQ_LEN = 20
-DENOISE_STEPS = 100
+DENOISE_STEPS = 10
 SPEED = 100  # 4 / DENOISE_STEPS
 START_FROM = 0
 
-D_MODEL = 32
-N_HEADS = 8
-N_LAYERS = 10
-DROPOUT = 0.0
+D_MODEL = 64
+N_HEADS = 32
+N_LAYERS = 4
+DROPOUT = 0.05
 
 
 class Denoiser(nn.Module):
@@ -69,7 +69,7 @@ class Denoiser(nn.Module):
             torch.arange(0, self.pos_encoding.size(-1), 2)
             * (-math.log(1000.0) / self.pos_encoding.size(-1))
         )
-        print("Div term: ", div_term[:10].detach().cpu().numpy())
+        # print("Div term: ", div_term[:10].detach().cpu().numpy())
         pe = torch.zeros_like(self.pos_encoding[0])
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
@@ -79,7 +79,7 @@ class Denoiser(nn.Module):
         plt.colorbar()
         plt.savefig("pos_encoding.png")
         plt.close()
-        print(f"Saved pos_encoding.png with shape {self.pos_encoding.shape}")
+        # print(f"Saved pos_encoding.png with shape {self.pos_encoding.shape}")
 
     @typed
     def forward(
@@ -113,6 +113,7 @@ def train(
     num_epochs: int = 10,
     lr: float = 1e-3,
     device: str = "cpu",
+    eval_every: int = 10,
 ) -> list[float]:
     """Train model and return loss history"""
     model.to(device)
@@ -142,6 +143,14 @@ def train(
         avg_loss = sum(epoch_losses) / len(epoch_losses)
         losses.append(avg_loss)
         logger.info(f"Epoch {epoch}: loss = {avg_loss:.4f}")
+
+        if epoch % eval_every == 0:
+            # Save model to `current_model.pt`
+            model_path = f"current_model.pt"
+            model.cpu()
+            torch.save(model.state_dict(), model_path)
+            model.to(device)
+            evaluate(model_path, device=device)
 
     return losses
 
@@ -202,7 +211,7 @@ def do_sample(
 
 def train_denoiser(
     output_path: str = "denoiser.pt",
-    epochs: int = 100,
+    epochs: int = 1000,
     batch_size: int = 32,
     dataset_size: int = 200,
     seq_len: int = SEQ_LEN,
@@ -361,7 +370,6 @@ def evaluate(
     )
     schedule = schedule.to(device)
     signal_var = schedule.signal_var[-1]
-    print(signal_var)
     assert signal_var.max().item() <= 0.011
     with torch.no_grad():
         xt = torch.randn((n_samples, seq_len))
@@ -373,13 +381,14 @@ def evaluate(
             q25 = losses.quantile(0.25)
             q50 = losses.quantile(0.50)
             q75 = losses.quantile(0.75)
-            print(
-                f"Step {step}: {losses.mean():.3f} (q25={q25:.3f}, q50={q50:.3f}, q75={q75:.3f})"
-            )
+            if step == 0 or step == n_steps - 1 or step == n_steps // 2:
+                print(
+                    f"Step {step}: {losses.mean():.3f} (q25={q25:.3f}, q50={q50:.3f}, q75={q75:.3f})"
+                )
 
 
 if __name__ == "__main__":
     train_denoiser()
-    evaluate()
+    # evaluate()
     # animated_sampleload()
     # test_model()

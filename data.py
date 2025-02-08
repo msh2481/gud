@@ -40,6 +40,8 @@ class DataGenerator:
 
     @typed
     def _hash(self) -> str:
+        self.init_params["class"] = self.__class__.__name__
+        # logger.debug(f"Hashing object: {self.init_params}")
         return hashlib.md5(json.dumps(self.init_params).encode()).hexdigest()
 
     @typed
@@ -53,7 +55,7 @@ class DataGenerator:
         try:
             path = f"data/{self._hash()}.pt"
             result = torch.load(path)
-            logger.info(f"Data loaded from {path}")
+            # logger.info(f"Data loaded from {path}")
             return result
         except FileNotFoundError:
             logger.warning(f"Data not found in {path}, creating new data")
@@ -153,12 +155,14 @@ class LogisticMap(DataGenerator):
     @classmethod
     @typed
     def complicated(cls, n: int) -> list[tuple[list[int], int]]:
-        assert n >= 9, "n must be at least 9"
+        # assert n >= 9, "n must be at least 9"
+        # TODO: return clauses
         clauses = [
-            ([0, 1], n - 3),
-            ([2, 3], n - 2),
-            ([4, 5], n - 1),
-            ([n - 3, n - 2], n - 1),
+            ([0, 1], 2)
+            # ([0, 1], n - 3),
+            # ([2, 3], n - 2),
+            # ([4, 5], n - 1),
+            # ([n - 3, n - 2], n - 1),
         ]
         return clauses
 
@@ -197,7 +201,7 @@ def visualize_data(
     """Generate and visualize sample sequences"""
     # set_seed(seed)
     generator = LogisticMap.load(
-        length=seq_len, clauses=LogisticMap.complicated(seq_len), tolerance=1e-4
+        length=seq_len, clauses=LogisticMap.complicated(seq_len), tolerance=1e-3
     )
     generator.inspect()
     while len(generator) < n_samples:
