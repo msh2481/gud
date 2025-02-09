@@ -155,8 +155,7 @@ class LogisticMap(DataGenerator):
     @classmethod
     @typed
     def complicated(cls, n: int) -> list[tuple[list[int], int]]:
-        # assert n >= 9, "n must be at least 9"
-        # TODO: return clauses
+        assert n >= 9, "n must be at least 9"
         clauses = [
             ([0, 1], 2)
             # ([0, 1], n - 3),

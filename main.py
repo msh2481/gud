@@ -21,14 +21,15 @@ from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
 SEQ_LEN = 20
-DENOISE_STEPS = 10
-SPEED = 100  # 4 / DENOISE_STEPS
+DENOISE_STEPS = 1
+SPEED = 1  # 4 / DENOISE_STEPS
 START_FROM = 0
+CAUSAL_MASK = True
 
 D_MODEL = 64
-N_HEADS = 32
-N_LAYERS = 4
-DROPOUT = 0.05
+N_HEADS = 16
+N_LAYERS = 2
+DROPOUT = 0.0
 
 
 class Denoiser(nn.Module):
@@ -45,6 +46,12 @@ class Denoiser(nn.Module):
         self.pos_encoding = nn.Parameter(torch.zeros(1, SEQ_LEN, d_model))
         # Input projection from 2 + pos features to d_model
         self.input_proj = nn.Linear(2, d_model)
+
+        # Create causal mask
+        mask = torch.triu(torch.ones(SEQ_LEN, SEQ_LEN), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float("-inf"))
+        self.register_buffer("causal_mask", mask)
+
         # Transformer encoder layers
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -99,7 +106,10 @@ class Denoiser(nn.Module):
         x = torch.stack([noisy_seq, signal_var], dim=-1)  # [batch, seq_len, 2]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding
-        x = self.transformer(x)  # [batch, seq_len, d_model]
+        if CAUSAL_MASK:
+            x = self.transformer(x, mask=self.causal_mask)  # [batch, seq_len, d_model]
+        else:
+            x = self.transformer(x)  # [batch, seq_len, d_model]
         x = self.output_proj(x)  # [batch, seq_len, 1]
         x = x.squeeze(-1)  # [batch, seq_len]
 
@@ -111,7 +121,7 @@ def train(
     model: nn.Module,
     train_loader: DataLoader,
     num_epochs: int = 10,
-    lr: float = 1e-3,
+    lr: float = 1e-4,
     device: str = "cpu",
     eval_every: int = 10,
 ) -> list[float]:
@@ -140,9 +150,11 @@ def train(
 
             epoch_losses.append(loss.item())
 
-        avg_loss = sum(epoch_losses) / len(epoch_losses)
-        losses.append(avg_loss)
-        logger.info(f"Epoch {epoch}: loss = {avg_loss:.4f}")
+        current_loss = sum(epoch_losses) / len(epoch_losses)
+        losses.append(current_loss)
+        half = len(losses) // 2
+        avg_loss = sum(losses[half:]) / len(losses[half:])
+        logger.info(f"Epoch {epoch}: loss = {current_loss:.4f} (avg={avg_loss:.4f})")
 
         if epoch % eval_every == 0:
             # Save model to `current_model.pt`
@@ -183,12 +195,12 @@ def do_sample(
         pred_noise = model(
             x_cur, curr_var.repeat(batch_size, 1), alpha.repeat(batch_size, 1)
         )
-        max_noise = torch.max(torch.abs(pred_noise))
-        if max_noise > noise_clip:
-            logger.warning(
-                f"Max noise at it={it} is {max_noise}, clipping to {noise_clip}"
-            )
-            pred_noise = pred_noise.clamp(-noise_clip, noise_clip)
+        # max_noise = torch.max(torch.abs(pred_noise))
+        # if max_noise > noise_clip:
+        #     logger.warning(
+        #         f"Max noise at it={it} is {max_noise}, clipping to {noise_clip}"
+        #     )
+        #     pred_noise = pred_noise.clamp(-noise_clip, noise_clip)
         assert not pred_noise.isnan().any(), f"pred_noise is nan at it={it}"
         upscale_coef = 1 / torch.sqrt(alpha)
         assert not torch.isnan(upscale_coef).any(), f"upscale_coef is nan at it={it}"
