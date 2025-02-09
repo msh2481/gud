@@ -21,10 +21,10 @@ from utils import set_seed
 
 MODEL_PATH = "denoiser.pt"
 SEQ_LEN = 20
-DENOISE_STEPS = 1
-SPEED = 1  # 4 / DENOISE_STEPS
+DENOISE_STEPS = 10
+SPEED = 100  # 4 / DENOISE_STEPS
 START_FROM = 0
-CAUSAL_MASK = True
+CAUSAL_MASK = False
 
 D_MODEL = 64
 N_HEADS = 16
@@ -113,7 +113,14 @@ class Denoiser(nn.Module):
         x = self.output_proj(x)  # [batch, seq_len, 1]
         x = x.squeeze(-1)  # [batch, seq_len]
 
-        return x
+        """
+        noisy_seq = sqrt(signal_var) * x0 + sqrt(1 - signal_var) * eps
+        eps = (noisy_seq - sqrt(signal_var) * x0) / sqrt(1 - signal_var)
+        """
+        eps = (noisy_seq - torch.sqrt(signal_var) * x) / torch.sqrt(
+            1 - signal_var + 1e-8
+        )
+        return eps
 
 
 @typed
