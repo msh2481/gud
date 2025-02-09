@@ -129,7 +129,7 @@ class Schedule:
         speed: float | None = None,
         denoise_steps: int = 10,
         start_from: int = 0,
-        final_signal_var: float = 1e-4,
+        final_signal_var: float = 1e-2,
     ) -> "Schedule":
         if (n_steps is None) == (speed is None):
             raise ValueError("Exactly one of n_steps or speed must be provided")

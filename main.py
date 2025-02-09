@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
-from data import DataGenerator, DiffusionDataset, LogisticMap
+from data import DataGenerator, DiffusionDataset, LogisticMap, WhiteNoise
 from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -230,11 +230,10 @@ def do_sample(
 
 def train_denoiser(
     output_path: str = "denoiser.pt",
-    epochs: int = 1000,
+    epochs: int = 11,
     batch_size: int = 32,
-    dataset_size: int = 200,
+    dataset_size: int = 10000,
     seq_len: int = SEQ_LEN,
-    chaos_ratio: float = 1.0,
     device: str | None = None,
     seed: int = 42,
 ):
@@ -252,9 +251,10 @@ def train_denoiser(
     logger.info(f"#params = {n_parameters}")
 
     # Generate dataset
-    generator = LogisticMap.load(
-        length=SEQ_LEN, clauses=LogisticMap.complicated(SEQ_LEN), tolerance=1e-3
-    )
+    # generator = LogisticMap.load(
+    #     length=SEQ_LEN, clauses=LogisticMap.complicated(SEQ_LEN), tolerance=1e-3
+    # )
+    generator = WhiteNoise.load(length=SEQ_LEN, tolerance=1e-3)
     while len(generator) < dataset_size:
         generator.sample(10)
     clean_data = generator.data[:dataset_size]
@@ -330,7 +330,7 @@ def create_animation(
         fig,
         update,
         frames=len(schedule.signal_var),
-        interval=500,
+        interval=1500,
         blit=False,
     )
     anim.save(output_path, writer="pillow")
@@ -407,7 +407,7 @@ def evaluate(
 
 
 if __name__ == "__main__":
-    train_denoiser()
+    # train_denoiser()
     # evaluate()
-    # animated_sample()
+    animated_sample()
     # test_model()
