@@ -25,6 +25,7 @@ DENOISE_STEPS = 10
 SPEED = 100  # 4 / DENOISE_STEPS
 START_FROM = 0
 CAUSAL_MASK = False
+PREDICT_X0 = True
 
 D_MODEL = 64
 N_HEADS = 16
@@ -113,14 +114,13 @@ class Denoiser(nn.Module):
         x = self.output_proj(x)  # [batch, seq_len, 1]
         x = x.squeeze(-1)  # [batch, seq_len]
 
-        """
-        noisy_seq = sqrt(signal_var) * x0 + sqrt(1 - signal_var) * eps
-        eps = (noisy_seq - sqrt(signal_var) * x0) / sqrt(1 - signal_var)
-        """
-        eps = (noisy_seq - torch.sqrt(signal_var) * x) / torch.sqrt(
-            1 - signal_var + 1e-8
-        )
-        return eps
+        if PREDICT_X0:
+            eps = (noisy_seq - torch.sqrt(signal_var) * x) / torch.sqrt(
+                1 - signal_var + 1e-8
+            )
+            return eps
+        else:
+            return x
 
 
 @typed
@@ -128,7 +128,7 @@ def train(
     model: nn.Module,
     train_loader: DataLoader,
     num_epochs: int = 10,
-    lr: float = 1e-4,
+    lr: float = 1e-3,
     device: str = "cpu",
     eval_every: int = 10,
 ) -> list[float]:
@@ -409,5 +409,5 @@ def evaluate(
 if __name__ == "__main__":
     train_denoiser()
     # evaluate()
-    # animated_sampleload()
+    # animated_sample()
     # test_model()
