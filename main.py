@@ -8,7 +8,15 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
-from data import DataGenerator, DiffusionDataset, LogisticMap, OneMinusX, WhiteNoise
+from data import (
+    DataGenerator,
+    DiffusionDataset,
+    LogisticMap,
+    LogisticMapBackward,
+    LogisticMapForward,
+    OneMinusX,
+    WhiteNoise,
+)
 from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -21,12 +29,12 @@ from utils import set_seed
 
 MODEL_PATH = "current_model.pt"
 SEQ_LEN = 20
-DENOISE_STEPS = 10
+DENOISE_STEPS = 22
 SPEED = 100  # 1 / DENOISE_STEPS
 START_FROM = 0
 CAUSAL_MASK = False
 PREDICT_X0 = True
-CLASS = LogisticMap
+CLASS = LogisticMapForward
 
 D_MODEL = 64
 N_HEADS = 32
@@ -162,7 +170,7 @@ def train(
         losses.append(current_loss)
         half = len(losses) // 2
         avg_loss = sum(losses[half:]) / len(losses[half:])
-        logger.info(f"Epoch {epoch}: loss = {current_loss:.4f} (avg={avg_loss:.4f})")
+        logger.info(f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f})")
 
         if epoch % eval_every == 0:
             # Save model to `current_model.pt`
@@ -252,9 +260,7 @@ def train_denoiser(
     logger.info(f"#params = {n_parameters}")
 
     # Generate dataset
-    generator = CLASS.load(
-        length=SEQ_LEN, clauses=CLASS.complicated(SEQ_LEN), tolerance=1e-3
-    )
+    generator = CLASS.load(length=SEQ_LEN, tolerance=1e-3)
     while len(generator) < dataset_size:
         generator.sample(10)
     generator.append_to_save()
@@ -340,7 +346,7 @@ def create_animation(
 
 
 def animated_sample(
-    model_path: str = "denoiser.pt",
+    model_path: str = MODEL_PATH,
     seq_len: int = SEQ_LEN,
     output_path: str = "denoising_animation.gif",
     seed: int = 42,
@@ -348,9 +354,7 @@ def animated_sample(
     """Sample from a trained model"""
     set_seed(seed)
     model, device = load_model(model_path)
-    generator = CLASS.load(
-        length=SEQ_LEN, clauses=CLASS.complicated(SEQ_LEN), tolerance=1e-3
-    )
+    generator = CLASS.load(length=SEQ_LEN, tolerance=1e-3)
     while len(generator) < 1:
         generator.sample(10)
     x0 = generator.data[0].unsqueeze(0).to(device)
@@ -379,9 +383,7 @@ def evaluate(
 ):
     """Evaluate the model"""
     model, device = load_model(model_path)
-    generator = CLASS.load(
-        length=SEQ_LEN, clauses=CLASS.complicated(SEQ_LEN), tolerance=1e-3
-    )
+    generator = CLASS.load(length=SEQ_LEN, tolerance=1e-3)
     schedule = Schedule.make_rolling(
         seq_len=seq_len,
         speed=SPEED,

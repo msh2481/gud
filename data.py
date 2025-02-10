@@ -151,22 +151,18 @@ class LogisticMap(DataGenerator):
         return torch.rand((batch_size, self.init_params["length"]))
 
     @typed
-    def losses_per_clause(self, x: TT) -> TT:
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
         clauses = self.init_params["clauses"]
+        if not clauses:
+            clauses = self.complicated(x.shape[1])
         results = torch.zeros(x.shape[0], len(clauses))
         for i, (sources, target) in enumerate(clauses):
             mean = x[:, sources].mean(dim=-1)
             prediction = (1 - mean) * mean * 3.993
             results[:, i] = (prediction - x[:, target]).square()
         return results
-
-    @classmethod
-    @typed
-    def linear(cls, n: int) -> list[tuple[list[int], int]]:
-        clauses = []
-        for i in range(1, n):
-            clauses.append(([i - 1], i))
-        return clauses
 
     @classmethod
     @typed
@@ -179,6 +175,68 @@ class LogisticMap(DataGenerator):
             ([n - 3, n - 2], n - 1),
         ]
         return clauses
+
+
+class LogisticMapForward(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
+        length = self.init_params["length"]
+        results = torch.zeros(x.shape[0], length - 1)
+        for i in range(length - 1):
+            prediction = (1 - x[:, i]) * x[:, i] * 3.993
+            results[:, i] = (prediction - x[:, i + 1]).square()
+        return results
+
+    @typed
+    def sample(
+        self, batch_size: int, debug: bool = False
+    ) -> Float[TT, "batch seq_len"]:
+        length = self.init_params["length"]
+        result = torch.zeros((batch_size, length))
+        # Sample first element randomly
+        result[:, 0] = torch.rand(batch_size)
+        # Ancestrally sample the rest
+        for i in range(length - 1):
+            result[:, i + 1] = (1 - result[:, i]) * result[:, i] * 3.993
+        self.data = torch.cat([self.data, result], dim=0)
+        return result
+
+
+class LogisticMapBackward(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
+        length = self.init_params["length"]
+        results = torch.zeros(x.shape[0], length - 1)
+        for i in range(length - 1):
+            prediction = (1 - x[:, i + 1]) * x[:, i + 1] * 3.993
+            results[:, i] = (prediction - x[:, i]).square()
+        return results
+
+    @typed
+    def sample(
+        self, batch_size: int, debug: bool = False
+    ) -> Float[TT, "batch seq_len"]:
+        length = self.init_params["length"]
+        result = torch.zeros((batch_size, length))
+        # Sample last element randomly
+        result[:, -1] = torch.rand(batch_size)
+        # Ancestrally sample backwards
+        for i in range(length - 2, -1, -1):
+            result[:, i] = (1 - result[:, i + 1]) * result[:, i + 1] * 3.993
+        self.data = torch.cat([self.data, result], dim=0)
+        return result
 
 
 class OneMinusX(DataGenerator):
