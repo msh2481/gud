@@ -156,7 +156,43 @@ class LogisticMap(DataGenerator):
         results = torch.zeros(x.shape[0], len(clauses))
         for i, (sources, target) in enumerate(clauses):
             mean = x[:, sources].mean(dim=-1)
-            prediction = 1 - mean  # * mean * 3.993
+            prediction = (1 - mean) * mean * 3.993
+            results[:, i] = (prediction - x[:, target]).square()
+        return results
+
+    @classmethod
+    @typed
+    def linear(cls, n: int) -> list[tuple[list[int], int]]:
+        clauses = []
+        for i in range(1, n):
+            clauses.append(([i - 1], i))
+        return clauses
+
+    @classmethod
+    @typed
+    def complicated(cls, n: int) -> list[tuple[list[int], int]]:
+        assert n >= 9, "n must be at least 9"
+        clauses = [
+            ([0, 1], n - 3),
+            ([2, 3], n - 2),
+            ([4, 5], n - 1),
+            ([n - 3, n - 2], n - 1),
+        ]
+        return clauses
+
+
+class OneMinusX(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def losses_per_clause(self, x: TT) -> TT:
+        clauses = self.init_params["clauses"]
+        results = torch.zeros(x.shape[0], len(clauses))
+        for i, (sources, target) in enumerate(clauses):
+            mean = x[:, sources].mean(dim=-1)
+            prediction = 1 - mean
             results[:, i] = (prediction - x[:, target]).square()
         return results
 
@@ -214,8 +250,8 @@ def visualize_data(
 ):
     """Generate and visualize sample sequences"""
     # set_seed(seed)
-    generator = LogisticMap.load(
-        length=seq_len, clauses=LogisticMap.complicated(seq_len), tolerance=1e-3
+    generator = OneMinusX.load(
+        length=seq_len, clauses=OneMinusX.complicated(seq_len), tolerance=1e-3
     )
     generator.inspect()
     while len(generator) < n_samples:
