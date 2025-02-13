@@ -3,6 +3,7 @@ from pprint import pprint
 
 from beartype import beartype as typed
 from beartype.typing import Literal
+from loguru import logger
 from main import ex
 
 
@@ -102,21 +103,26 @@ def run(
     ex.run(
         config_updates=config_updates,
         meta_info={
-            "comment": f"k={kind} d={direction} n={denoise_steps} s={speed} | {comment}"
+            "comment": f"k={kind} d={direction} n={denoise_steps} s={speed:.4f} | {comment}"
         },
     )
 
 
-cfg = get_config(kind="AR", direction="forward")
-del cfg["generator_config"]["permutation"]
-# cfg["generator_config"]["generator_class"] = "WhiteNoise"
-cfg["generator_config"]["generator_class"] = "LogisticMapForward"
-cfg["train_config"]["lr"] = 1e-9
-pprint(cfg)
-ex.run(
-    config_updates=cfg,
-    meta_info={"comment": "testing AR forward"},
-)
+for kind in ["AR", "D", "GUD"]:
+    for direction in ["forward", "backward", "shuffled", "slightly_shuffled"]:
+        logger.warning(f"Running {kind} {direction}")
+        run(kind=kind, direction=direction, comment="grid")
+
+# cfg = get_config(kind="AR", direction="forward")
+# del cfg["generator_config"]["permutation"]
+# # cfg["generator_config"]["generator_class"] = "WhiteNoise"
+# cfg["generator_config"]["generator_class"] = "LogisticMapForward"
+# cfg["train_config"]["lr"] = 1e-9
+# pprint(cfg)
+# ex.run(
+#     config_updates=cfg,
+#     meta_info={"comment": "testing AR forward"},
+# )
 
 """ 
 model_config = {

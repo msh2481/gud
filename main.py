@@ -22,7 +22,7 @@ from utils import set_seed
 
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
-# ex.observers.append(MongoObserver(db_name="sacred"))
+ex.observers.append(MongoObserver(db_name="sacred"))
 
 
 @ex.config
@@ -43,7 +43,7 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 100,
+        "epochs": 1000,
         "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
