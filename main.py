@@ -246,7 +246,8 @@ def train_batch(
         true_noise.to(device),
     )
     pred_noise = model(xt, signal_var, signal_ratio)
-    loss = ((pred_noise - true_noise).square() * signal_var).mean(dim=0).sum()
+    delta_var = signal_var * (1 / (signal_ratio + 1e-8) - 1)
+    loss = ((pred_noise - true_noise).square() * delta_var).mean(dim=0).sum()
     opt.zero_grad()
     loss.backward()
     opt.step()

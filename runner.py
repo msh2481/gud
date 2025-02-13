@@ -109,7 +109,8 @@ def run(
 
 cfg = get_config(kind="AR", direction="forward")
 del cfg["generator_config"]["permutation"]
-cfg["generator_config"]["generator_class"] = "WhiteNoise"
+# cfg["generator_config"]["generator_class"] = "WhiteNoise"
+cfg["generator_config"]["generator_class"] = "LogisticMapForward"
 cfg["train_config"]["lr"] = 1e-9
 pprint(cfg)
 ex.run(
