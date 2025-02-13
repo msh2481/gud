@@ -32,6 +32,7 @@ def config():
 
     # Model configuration
     model_config = {
+        "seq_len": 20,
         "d_model": 64,
         "n_heads": 16,
         "n_layers": 4,
@@ -53,7 +54,6 @@ def config():
 
     # Diffusion configuration
     diffusion_config = {
-        "seq_len": 20,
         "denoise_steps": 22,
         "speed": 100,  # 1 / DENOISE_STEPS
         "start_from": 0,
@@ -172,13 +172,13 @@ def get_samples(model, x_t, schedule, diffusion_config):
 @ex.capture
 @typed
 def setup_model(
-    _run, model_config: dict, train_config: dict, diffusion_config: dict
+    _run, model_config: dict, train_config: dict
 ) -> tuple[nn.Module, torch.device]:
     set_seed(train_config["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     model = Denoiser(
-        seq_len=diffusion_config["seq_len"],
+        seq_len=model_config["seq_len"],
         d_model=model_config["d_model"],
         n_heads=model_config["n_heads"],
         n_layers=model_config["n_layers"],
@@ -199,13 +199,13 @@ def get_dataset(
     _run, model_config: dict, train_config: dict, diffusion_config: dict
 ) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
     generator_class = globals()[diffusion_config["generator_class"]]
-    generator = generator_class.load(length=diffusion_config["seq_len"], tolerance=1e-3)
+    generator = generator_class.load(length=model_config["seq_len"], tolerance=1e-3)
     while len(generator) < train_config["dataset_size"]:
         generator.sample(10)
     generator.append_to_save()
     clean_data = generator.data[: train_config["dataset_size"]]
     schedule = Schedule.make_rolling(
-        seq_len=diffusion_config["seq_len"],
+        seq_len=model_config["seq_len"],
         speed=diffusion_config["speed"],
         denoise_steps=diffusion_config["denoise_steps"],
         start_from=diffusion_config["start_from"],
@@ -264,7 +264,7 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
     losses = []
     for epoch in range(train_config["epochs"]):
         epoch_losses = [
-            train_batch(model=model, batch=batch, opt=opt, device=device)
+            train_batch(model=model, batch=tuple(batch), opt=opt, device=device)
             for batch in train_loader
         ]
         # Compute epoch & avg loss
@@ -284,7 +284,9 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
 
 
 @ex.capture
-def load_model(model_path: str, model_config: dict) -> tuple[nn.Module, str]:
+def load_model(
+    model_path: str, diffusion_config: dict, model_config: dict
+) -> tuple[nn.Module, str]:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = Denoiser(
         seq_len=model_config["seq_len"],
@@ -367,7 +369,7 @@ def animated_sample(
 @ex.capture
 def evaluate(
     _run,
-    diffusion_config: dict,
+    model_config: dict,
     model_path: str = "denoiser.pt",
     n_samples: int = 1000,
     epoch_number: int | None = None,
@@ -381,16 +383,16 @@ def evaluate(
         signal_var.max().item() <= 0.011
     ), f"not noised enough: signal_var.max() = {signal_var.max().item()}"
     with torch.no_grad():
-        xt = torch.randn((n_samples, diffusion_config["seq_len"]))
+        xt = torch.randn((n_samples, model_config["seq_len"]))
         samples = get_samples(model, xt, schedule)
         n_steps = samples.shape[1]
         q25, q50, q75 = 0, 0, 0
         for step in range(n_steps):
             selection = samples[:, step]
             losses = generator.loss(selection)
-            q25 = losses.quantile(0.25)
-            q50 = losses.quantile(0.50)
-            q75 = losses.quantile(0.75)
+            q25 = losses.quantile(0.25).item()
+            q50 = losses.quantile(0.50).item()
+            q75 = losses.quantile(0.75).item()
             if step == 0 or step == n_steps - 1 or step == n_steps // 2:
                 print(
                     f"Step {step}: {losses.mean():.3f} (q25={q25:.3f}, q50={q50:.3f}, q75={q75:.3f})"
