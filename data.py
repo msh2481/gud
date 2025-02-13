@@ -120,7 +120,7 @@ class WhiteNoise(DataGenerator):
         return torch.randn((batch_size, self.init_params["length"]))
 
     @typed
-    def loss_per_clause(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch 1"]:
+    def losses_per_clause(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch 1"]:
         return torch.zeros((x.shape[0], 1))
 
     @typed
@@ -186,6 +186,9 @@ class LogisticMapForward(DataGenerator):
     def losses_per_clause(
         self, x: Float[TT, "batch seq_len"]
     ) -> Float[TT, "batch n_clauses"]:
+        # print(
+        #     f"x min={x.min()}, max={x.max()} mean={x.mean()} q50={x.quantile(0.5).item()} q5={x.quantile(0.05).item()} q95={x.quantile(0.95).item()}"
+        # )
         length = self.init_params["length"]
         results = torch.zeros(x.shape[0], length - 1)
         for i in range(length - 1):
@@ -235,6 +238,55 @@ class LogisticMapBackward(DataGenerator):
         # Ancestrally sample backwards
         for i in range(length - 2, -1, -1):
             result[:, i] = (1 - result[:, i + 1]) * result[:, i + 1] * 3.993
+        self.data = torch.cat([self.data, result], dim=0)
+        return result
+
+
+class LogisticMapPermutation(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
+        length = self.init_params["length"]
+        permutation = self.init_params["permutation"]
+        assert (
+            len(permutation) == length
+        ), "Permutation length must match sequence length"
+        assert sorted(permutation) == list(range(length)), "Invalid permutation"
+
+        results = torch.zeros(x.shape[0], length - 1)
+        # For each position (except first in permutation), compute loss based on its predecessor
+        for i in range(1, length):
+            curr_idx = permutation[i]  # Current position in permutation
+            prev_idx = permutation[i - 1]  # Previous position in permutation
+            prediction = (1 - x[:, prev_idx]) * x[:, prev_idx] * 3.993
+            results[:, i - 1] = (prediction - x[:, curr_idx]).square()
+        return results
+
+    @typed
+    def sample(
+        self, batch_size: int, debug: bool = False
+    ) -> Float[TT, "batch seq_len"]:
+        length = self.init_params["length"]
+        permutation = self.init_params["permutation"]
+        result = torch.zeros((batch_size, length))
+
+        # Initialize first position in permutation with random values
+        first_pos = permutation[0]
+        result[:, first_pos] = torch.rand(batch_size)
+
+        # Generate remaining positions in permutation order
+        for i in range(1, length):
+            curr_idx = permutation[i]  # Position to generate
+            prev_idx = permutation[i - 1]  # Position to base it on
+            result[:, curr_idx] = (
+                (1 - result[:, prev_idx]) * result[:, prev_idx] * 3.993
+            )
+
         self.data = torch.cat([self.data, result], dim=0)
         return result
 

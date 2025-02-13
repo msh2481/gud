@@ -22,8 +22,7 @@ from utils import set_seed
 
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
-ex.observers.append(MongoObserver(db_name="sacred"))
-ex.observers.append(FileStorageObserver("runs"))
+# ex.observers.append(MongoObserver(db_name="sacred"))
 
 
 @ex.config
@@ -54,10 +53,16 @@ def config():
 
     # Diffusion configuration
     diffusion_config = {
-        "denoise_steps": 22,
-        "speed": 100,  # 1 / DENOISE_STEPS
+        "denoise_steps": 1,
+        "speed": 1,
         "start_from": 0,
-        "generator_class": "LogisticMapForward",
+    }
+
+    generator_config = {
+        "generator_class": "LogisticMapPermutation",
+        "length": 20,
+        "tolerance": 1e-3,
+        "permutation": list(range(20)),
     }
 
 
@@ -165,7 +170,6 @@ def get_samples(model, x_t, schedule, diffusion_config):
         if it < n_steps - 2:
             x_new = x_new + torch.sqrt(beta_next) * torch.randn_like(x_new)
         xs[:, it] = x_new
-
     return xs.flip(dims=[1])
 
 
@@ -196,10 +200,14 @@ def setup_model(
 @ex.capture
 @typed
 def get_dataset(
-    _run, model_config: dict, train_config: dict, diffusion_config: dict
+    _run,
+    model_config: dict,
+    train_config: dict,
+    diffusion_config: dict,
+    generator_config: dict,
 ) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
-    generator_class = globals()[diffusion_config["generator_class"]]
-    generator = generator_class.load(length=model_config["seq_len"], tolerance=1e-3)
+    generator_class = globals()[generator_config["generator_class"]]
+    generator = generator_class.load(**generator_config)
     while len(generator) < train_config["dataset_size"]:
         generator.sample(10)
     generator.append_to_save()
