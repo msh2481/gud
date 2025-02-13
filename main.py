@@ -3,66 +3,86 @@ from pathlib import Path
 from typing import Annotated
 
 import matplotlib.animation as animation
-
 import numpy as np
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
-from data import (
-    DataGenerator,
-    DiffusionDataset,
-    LogisticMap,
-    LogisticMapBackward,
-    LogisticMapForward,
-    OneMinusX,
-    WhiteNoise,
-)
+from data import *
 from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
 from numpy import ndarray as ND
 from rich.progress import track
+from sacred import Experiment
+from sacred.observers import FileStorageObserver, MongoObserver
 from schedule import Schedule, visualize_schedule
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 from utils import set_seed
 
-MODEL_PATH = "current_model.pt"
-SEQ_LEN = 20
-DENOISE_STEPS = 22
-SPEED = 100  # 1 / DENOISE_STEPS
-START_FROM = 0
-CAUSAL_MASK = False
-PREDICT_X0 = True
-CLASS = LogisticMapForward
+# Initialize Sacred experiment
+ex = Experiment("denoising_diffusion")
+ex.observers.append(MongoObserver(db_name="sacred"))
+ex.observers.append(FileStorageObserver("runs"))
 
-D_MODEL = 64
-N_HEADS = 32
-N_LAYERS = 4
-DROPOUT = 0.0
+
+@ex.config
+def config():
+    tags = ["gud"]
+
+    # Model configuration
+    model_config = {
+        "d_model": 64,
+        "n_heads": 16,
+        "n_layers": 4,
+        "dropout": 0.0,
+        "predict_x0": True,
+        "use_causal_mask": False,
+    }
+
+    # Training configuration
+    train_config = {
+        "output_path": "denoiser.pt",
+        "epochs": 100,
+        "batch_size": 32,
+        "dataset_size": 2000,
+        "lr": 1e-3,
+        "eval_every": 10,
+        "seed": 42,
+    }
+
+    # Diffusion configuration
+    diffusion_config = {
+        "seq_len": 20,
+        "denoise_steps": 22,
+        "speed": 100,  # 1 / DENOISE_STEPS
+        "start_from": 0,
+        "generator_class": "LogisticMapForward",
+    }
 
 
 class Denoiser(nn.Module):
     @typed
     def __init__(
         self,
+        seq_len: int,
         d_model: int = 256,
         n_heads: int = 8,
         n_layers: int = 4,
         dropout: float = 0.1,
+        predict_x0: bool = True,
+        use_causal_mask: bool = False,
     ):
         super().__init__()
-        # Positional encoding
-        self.pos_encoding = nn.Parameter(torch.zeros(1, SEQ_LEN, d_model))
-        # Input projection from 2 + pos features to d_model
+        self.predict_x0 = predict_x0
+        self.use_causal_mask = use_causal_mask
+        self.pos_encoding = nn.Parameter(torch.zeros(1, seq_len, d_model))
         self.input_proj = nn.Linear(2, d_model)
 
-        # Create causal mask
-        mask = torch.triu(torch.ones(SEQ_LEN, SEQ_LEN), diagonal=1)
+        mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1)
         mask = mask.masked_fill(mask == 1, float("-inf"))
         self.register_buffer("causal_mask", mask)
 
-        # Transformer encoder layers
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
@@ -72,31 +92,20 @@ class Denoiser(nn.Module):
             norm_first=True,  # Better training stability
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-
-        # Output projection
         self.output_proj = nn.Linear(d_model, 1)
-
-        # Initialize positional encodings
         self._init_pos_encoding()
 
     def _init_pos_encoding(self):
         """Initialize positional encodings using sine/cosine functions"""
-        position = torch.arange(SEQ_LEN).unsqueeze(1)
+        position = torch.arange(self.pos_encoding.size(1)).unsqueeze(1)
         div_term = torch.pi * torch.exp(
             torch.arange(0, self.pos_encoding.size(-1), 2)
             * (-math.log(1000.0) / self.pos_encoding.size(-1))
         )
-        # print("Div term: ", div_term[:10].detach().cpu().numpy())
         pe = torch.zeros_like(self.pos_encoding[0])
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         self.pos_encoding.data.copy_(pe.unsqueeze(0))
-        # Show pos_encoding as a heatmap
-        plt.imshow(self.pos_encoding.detach().cpu().squeeze().numpy())
-        plt.colorbar()
-        plt.savefig("pos_encoding.png")
-        plt.close()
-        # print(f"Saved pos_encoding.png with shape {self.pos_encoding.shape}")
 
     @typed
     def forward(
@@ -105,25 +114,17 @@ class Denoiser(nn.Module):
         signal_var: Float[TT, "batch seq_len"],
         signal_ratio: Float[TT, "batch seq_len"],
     ) -> Float[TT, "batch seq_len"]:
-        """
-        Args:
-            noisy_seq: [batch_size, seq_len]
-            signal_var: [batch_size, seq_len] - remaining signal variance per position
-            signal_ratio: [batch_size, seq_len] - signal ratio per position
-        Returns:
-            [batch_size, seq_len] predicted noise
-        """
         x = torch.stack([noisy_seq, signal_var], dim=-1)  # [batch, seq_len, 2]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding
-        if CAUSAL_MASK:
+        if self.use_causal_mask:
             x = self.transformer(x, mask=self.causal_mask)  # [batch, seq_len, d_model]
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
         x = self.output_proj(x)  # [batch, seq_len, 1]
         x = x.squeeze(-1)  # [batch, seq_len]
 
-        if PREDICT_X0:
+        if self.predict_x0:
             eps = (noisy_seq - torch.sqrt(signal_var) * x) / torch.sqrt(
                 1 - signal_var + 1e-8
             )
@@ -132,63 +133,8 @@ class Denoiser(nn.Module):
             return x
 
 
-@typed
-def train(
-    model: nn.Module,
-    train_loader: DataLoader,
-    num_epochs: int = 10,
-    lr: float = 1e-3,
-    device: str = "cpu",
-    eval_every: int = 10,
-) -> list[float]:
-    """Train model and return loss history"""
-    model.to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
-    losses = []
-
-    for epoch in range(num_epochs):
-        epoch_losses = []
-        for xt, signal_var, signal_ratio, noise in train_loader:
-            xt, signal_var, signal_ratio, noise = (
-                xt.to(device),
-                signal_var.to(device),
-                signal_ratio.to(device),
-                noise.to(device),
-            )
-            pred_noise = model(xt, signal_var, signal_ratio)
-            delta_var = signal_var * (1 / (signal_ratio + 1e-8) - 1)
-            loss = ((pred_noise - noise).square() * delta_var).mean(dim=0).sum()
-            # loss = (pred_noise - noise).square().sum()
-
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-
-            epoch_losses.append(loss.item())
-
-        current_loss = sum(epoch_losses) / len(epoch_losses)
-        losses.append(current_loss)
-        half = len(losses) // 2
-        avg_loss = sum(losses[half:]) / len(losses[half:])
-        logger.info(f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f})")
-
-        if epoch % eval_every == 0:
-            # Save model to `current_model.pt`
-            model_path = f"current_model.pt"
-            model.cpu()
-            torch.save(model.state_dict(), model_path)
-            model.to(device)
-            evaluate(model_path, device=device)
-
-    return losses
-
-
-@typed
-def do_sample(
-    model: nn.Module,
-    x_t: Float[TT, "batch seq_len"],
-    schedule: Schedule,
-) -> Float[TT, "batch n_steps seq_len"]:
+@ex.capture
+def get_samples(model, x_t, schedule, diffusion_config):
     """Sample from the diffusion model following the schedule."""
     device = x_t.device
     n_steps = len(schedule.signal_var)
@@ -198,7 +144,6 @@ def do_sample(
     xs = torch.zeros(batch_size, n_steps, seq_len, device=device)
     xs[:, -1] = x_t
     eps = 1e-8
-    noise_clip = 5.0
 
     for it in reversed(range(n_steps - 1)):
         curr_var = schedule.signal_var[it + 1]
@@ -209,94 +154,146 @@ def do_sample(
         x_cur = xs[:, it + 1]
         assert not x_cur.isnan().any(), f"x_cur is nan at it={it}"
         pred_noise = model(
-            x_cur, curr_var.repeat(batch_size, 1), alpha.repeat(batch_size, 1)
+            x_cur,
+            curr_var.repeat(batch_size, 1),
+            alpha.repeat(batch_size, 1),
         )
-        # max_noise = torch.max(torch.abs(pred_noise))
-        # if max_noise > noise_clip:
-        #     logger.warning(
-        #         f"Max noise at it={it} is {max_noise}, clipping to {noise_clip}"
-        #     )
-        #     pred_noise = pred_noise.clamp(-noise_clip, noise_clip)
-        assert not pred_noise.isnan().any(), f"pred_noise is nan at it={it}"
         upscale_coef = 1 / torch.sqrt(alpha)
-        assert not torch.isnan(upscale_coef).any(), f"upscale_coef is nan at it={it}"
         noise_coef = beta_cur / (torch.sqrt(1 - curr_var) + eps)
-        assert not torch.isnan(noise_coef).any(), f"noise_coef is nan at it={it}"
-        # logger.info(f"beta: {beta}")
-        # logger.info(f"sqrt(1 - curr_var): {torch.sqrt(1 - curr_var)}")
-        # logger.info(f"noise_coef: {noise_coef}")
-        assert (noise_coef <= 1).all(), f"noise_coef is greater than 1 at it={it}"
         x_new = upscale_coef * (x_cur - noise_coef * pred_noise)
-        assert not torch.isnan(x_new).any(), f"x_new is nan at it={it}"
 
         if it < n_steps - 2:
             x_new = x_new + torch.sqrt(beta_next) * torch.randn_like(x_new)
-            assert not torch.isnan(x_new).any(), f"x_new' is nan at it={it}"
         xs[:, it] = x_new
 
     return xs.flip(dims=[1])
 
 
-def train_denoiser(
-    output_path: str = "denoiser.pt",
-    epochs: int = 10000,
-    batch_size: int = 32,
-    dataset_size: int = 2000,
-    seq_len: int = SEQ_LEN,
-    device: str | None = None,
-    seed: int = 42,
-):
-    """Train the denoising model"""
-    set_seed(seed)
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+@ex.capture
+@typed
+def setup_model(
+    _run, model_config: dict, train_config: dict, diffusion_config: dict
+) -> tuple[nn.Module, torch.device]:
+    set_seed(train_config["seed"])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
-
-    # Initialize model
     model = Denoiser(
-        d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT
+        seq_len=diffusion_config["seq_len"],
+        d_model=model_config["d_model"],
+        n_heads=model_config["n_heads"],
+        n_layers=model_config["n_layers"],
+        dropout=model_config["dropout"],
+        predict_x0=model_config["predict_x0"],
+        use_causal_mask=model_config["use_causal_mask"],
     )
+    model.to(device)
     n_parameters = sum(p.numel() for p in model.parameters())
     logger.info(f"#params = {n_parameters}")
+    _run.log_scalar("n_parameters", n_parameters)
+    return model, device
 
-    # Generate dataset
-    generator = CLASS.load(length=SEQ_LEN, tolerance=1e-3)
-    while len(generator) < dataset_size:
+
+@ex.capture
+@typed
+def get_dataset(
+    _run, model_config: dict, train_config: dict, diffusion_config: dict
+) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
+    generator_class = globals()[diffusion_config["generator_class"]]
+    generator = generator_class.load(length=diffusion_config["seq_len"], tolerance=1e-3)
+    while len(generator) < train_config["dataset_size"]:
         generator.sample(10)
     generator.append_to_save()
-    clean_data = generator.data[:dataset_size]
+    clean_data = generator.data[: train_config["dataset_size"]]
     schedule = Schedule.make_rolling(
-        seq_len,
-        speed=SPEED,
-        denoise_steps=DENOISE_STEPS,
-        start_from=START_FROM,
+        seq_len=diffusion_config["seq_len"],
+        speed=diffusion_config["speed"],
+        denoise_steps=diffusion_config["denoise_steps"],
+        start_from=diffusion_config["start_from"],
     )
-    visualize_schedule(schedule)
+    # visualize_schedule(schedule)
     dataset = DiffusionDataset(clean_data, schedule)
-    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(
+        dataset, batch_size=train_config["batch_size"], shuffle=True
+    )
+    return generator, clean_data, schedule, train_loader
 
-    # Train model
-    losses = train(model, train_loader, num_epochs=epochs, device=device)
 
-    # Plot training losses
-    plt.figure(figsize=(10, 5))
-    plt.plot(losses)
-    plt.xlabel("Epoch")
-    plt.ylabel("MSE Loss")
-    plt.title(f"Training Loss (seed={seed})")
-    plt.savefig("training_loss.png")
-    plt.close()
+@typed
+def train_batch(
+    model: nn.Module,
+    batch: tuple[
+        Float[TT, "batch seq_len"],  # xt
+        Float[TT, "batch seq_len"],  # signal_var
+        Float[TT, "batch seq_len"],  # signal_ratio
+        Float[TT, "batch seq_len"],  # true_noise
+    ],
+    opt: torch.optim.Optimizer,
+    device: torch.device,
+) -> float:
+    xt, signal_var, signal_ratio, true_noise = batch
+    xt, signal_var, signal_ratio, true_noise = (
+        xt.to(device),
+        signal_var.to(device),
+        signal_ratio.to(device),
+        true_noise.to(device),
+    )
+    pred_noise = model(xt, signal_var, signal_ratio)
+    loss = ((pred_noise - true_noise).square() * signal_var).mean(dim=0).sum()
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
+    return loss.item()
 
-    # Save model
+
+@ex.capture
+@typed
+def save_model(model: nn.Module, train_config: dict, device: torch.device) -> None:
+    model_path = train_config["output_path"]
     model.cpu()
-    torch.save(model.state_dict(), output_path)
-    logger.info(f"Model saved to {output_path}")
+    torch.save(model.state_dict(), model_path)
+    model.to(device)
 
 
-def load_model(model_path: str) -> tuple[nn.Module, str]:
+@ex.capture
+def train_denoiser(_run, model_config, train_config, diffusion_config):
+    """Train the denoising model"""
+    model, device = setup_model()
+    _generator, _clean_data, _schedule, train_loader = get_dataset()
+    opt = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
+
+    losses = []
+    for epoch in range(train_config["epochs"]):
+        epoch_losses = [
+            train_batch(model=model, batch=batch, opt=opt, device=device)
+            for batch in train_loader
+        ]
+        # Compute epoch & avg loss
+        current_loss = sum(epoch_losses) / len(epoch_losses)
+        losses.append(current_loss)
+        half = len(losses) // 2
+        avg_loss = sum(losses[half:]) / len(losses[half:])
+        logger.info(f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f})")
+        # Log metrics to Sacred
+        _run.log_scalar("loss", current_loss, epoch)
+        _run.log_scalar("avg_loss", avg_loss, epoch)
+        # Save model & evaluate
+        if epoch % train_config["eval_every"] == 0:
+            save_model(model=model, device=device)
+            evaluate(model_path=train_config["output_path"], epoch_number=epoch)
+    save_model(model=model, device=device)
+
+
+@ex.capture
+def load_model(model_path: str, model_config: dict) -> tuple[nn.Module, str]:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = Denoiser(
-        d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT
+        seq_len=model_config["seq_len"],
+        d_model=model_config["d_model"],
+        n_heads=model_config["n_heads"],
+        n_layers=model_config["n_layers"],
+        dropout=model_config["dropout"],
+        predict_x0=model_config["predict_x0"],
+        use_causal_mask=model_config["use_causal_mask"],
     )
     if not Path(model_path).exists():
         raise FileNotFoundError(f"Model file {model_path} not found")
@@ -306,11 +303,13 @@ def load_model(model_path: str) -> tuple[nn.Module, str]:
     return model, device
 
 
+@ex.capture
 def create_animation(
     samples: Float[TT, "batch n_steps seq_len"],
     schedule: Schedule,
     output_path: str,
     generator: DataGenerator,
+    model_config: dict,
 ) -> None:
     fig = plt.figure(figsize=(15, 5))
     ax = plt.gca()
@@ -322,7 +321,7 @@ def create_animation(
             alpha = 1.5 ** (i - frame)
             ax.plot(samples[0, i].cpu(), color="blue", lw=0.5, alpha=alpha)
         current = samples[:1, frame]
-        assert current.shape == (1, SEQ_LEN)
+        assert current.shape == (1, model_config["seq_len"])
         losses = generator.losses_per_clause(current)[0].detach().cpu().numpy()
         losses_str = " ".join(f"{loss:.3f}" for loss in losses)
         ax.set_title(
@@ -345,58 +344,47 @@ def create_animation(
     logger.info(f"Animation saved to {output_path}")
 
 
+@ex.capture
 def animated_sample(
-    model_path: str = MODEL_PATH,
-    seq_len: int = SEQ_LEN,
+    diffusion_config: dict,
+    train_config: dict,
     output_path: str = "denoising_animation.gif",
     seed: int = 42,
 ):
     """Sample from a trained model"""
     set_seed(seed)
-    model, device = load_model(model_path)
-    generator = CLASS.load(length=SEQ_LEN, tolerance=1e-3)
-    while len(generator) < 1:
-        generator.sample(10)
-    x0 = generator.data[0].unsqueeze(0).to(device)
+    model, device = load_model(model_path=train_config["output_path"])
+    generator, clean_data, schedule, _train_loader = get_dataset()
+    x0 = clean_data[:1].to(device)
+    schedule = schedule.to(device)
+    signal_var = schedule.signal_var[-1]
+    xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(1 - signal_var)
     with torch.no_grad():
-        # Create schedule
-        schedule = Schedule.make_rolling(
-            seq_len=seq_len,
-            speed=SPEED,
-            denoise_steps=DENOISE_STEPS,
-            start_from=START_FROM,
-        )
-        schedule = schedule.to(device)
-        signal_var = schedule.signal_var[-1]
-        xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(
-            1 - signal_var
-        )
-        samples = do_sample(model, xt, schedule)
+        samples = get_samples(model, xt, schedule)
         create_animation(samples, schedule, output_path, generator)
 
 
+@ex.capture
 def evaluate(
+    _run,
+    diffusion_config: dict,
     model_path: str = "denoiser.pt",
     n_samples: int = 1000,
-    seq_len: int = SEQ_LEN,
-    device: str | None = None,
+    epoch_number: int | None = None,
 ):
     """Evaluate the model"""
-    model, device = load_model(model_path)
-    generator = CLASS.load(length=SEQ_LEN, tolerance=1e-3)
-    schedule = Schedule.make_rolling(
-        seq_len=seq_len,
-        speed=SPEED,
-        denoise_steps=DENOISE_STEPS,
-        start_from=START_FROM,
-    )
+    model, device = load_model(model_path=model_path)
+    generator, clean_data, schedule, _train_loader = get_dataset()
     schedule = schedule.to(device)
     signal_var = schedule.signal_var[-1]
-    assert signal_var.max().item() <= 0.011
+    assert (
+        signal_var.max().item() <= 0.011
+    ), f"not noised enough: signal_var.max() = {signal_var.max().item()}"
     with torch.no_grad():
-        xt = torch.randn((n_samples, seq_len))
-        samples = do_sample(model, xt, schedule)
+        xt = torch.randn((n_samples, diffusion_config["seq_len"]))
+        samples = get_samples(model, xt, schedule)
         n_steps = samples.shape[1]
+        q25, q50, q75 = 0, 0, 0
         for step in range(n_steps):
             selection = samples[:, step]
             losses = generator.loss(selection)
@@ -407,9 +395,13 @@ def evaluate(
                 print(
                     f"Step {step}: {losses.mean():.3f} (q25={q25:.3f}, q50={q50:.3f}, q75={q75:.3f})"
                 )
+        _run.log_scalar("q25", q25, epoch_number)
+        _run.log_scalar("q50", q50, epoch_number)
+        _run.log_scalar("q75", q75, epoch_number)
 
 
-if __name__ == "__main__":
+@ex.automain
+def main():
     train_denoiser()
     # evaluate()
     # animated_sample()
