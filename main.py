@@ -43,7 +43,7 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 1000,
+        "epochs": 1,
         "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
@@ -96,7 +96,11 @@ class Denoiser(nn.Module):
             batch_first=True,  # [batch, seq, features]
             norm_first=True,  # Better training stability
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=n_layers,
+            enable_nested_tensor=False,
+        )
         self.output_proj = nn.Linear(d_model, 1)
         self._init_pos_encoding()
 
@@ -207,10 +211,10 @@ def get_dataset(
     generator_config: dict,
 ) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
     generator_class = globals()[generator_config["generator_class"]]
-    generator = generator_class.load(**generator_config)
+    generator = generator_class(**generator_config)
     while len(generator) < train_config["dataset_size"]:
         generator.sample(10)
-    generator.append_to_save()
+    # generator.append_to_save()
     clean_data = generator.data[: train_config["dataset_size"]]
     schedule = Schedule.make_rolling(
         seq_len=model_config["seq_len"],
@@ -308,7 +312,7 @@ def load_model(
     )
     if not Path(model_path).exists():
         raise FileNotFoundError(f"Model file {model_path} not found")
-    checkpoint = torch.load(model_path)
+    checkpoint = torch.load(model_path, weights_only=True)
     model.load_state_dict(checkpoint)
     model.to(device).eval()
     return model, device

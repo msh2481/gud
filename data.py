@@ -55,7 +55,7 @@ class DataGenerator:
         try:
             path = f"data/{self._hash()}.pt"
             result = torch.load(path)
-            # logger.info(f"Data loaded from {path}")
+            logger.info(f"Data loaded from {path}")
             return result
         except FileNotFoundError:
             logger.warning(f"Data not found in {path}, creating new data")

@@ -77,7 +77,7 @@ def get_config(
     config_updates = {
         "diffusion_config": {
             "denoise_steps": denoise_steps,
-            "speed": 1 / denoise_steps,
+            "speed": speed,
         },
         "train_config": {},
         "model_config": {
