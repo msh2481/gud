@@ -47,7 +47,7 @@ def config():
         "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
-        "eval_every": 50,
+        "eval_every": 10,
         "seed": 42,
     }
 

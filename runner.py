@@ -80,7 +80,7 @@ def get_config(
     elif kind == "UD":
         N = len(permutation)
         T = N
-        speed = (N + window) / T
+        speed = int((N + window) / T)
         denoise_steps = max(1, int(window / speed + 0.5))
 
     output_path = f"models/{uuid.uuid4()}.pt"
@@ -126,17 +126,17 @@ kind = "UD"
 direction = "swaps"
 
 for rep in range(5):
-    for step in [2, 4]:
-        run(kind="AR", direction="swaps", step=step, comment=f"swaps #{rep}")
+    for step in [4, 2]:
+        run(kind="AR", direction="swaps", step=step, comment=f"fixed-steps #{rep}")
         for w in [2, 4, 8, 32]:
             run(
                 kind="UD",
                 direction="swaps",
                 step=step,
                 window=w,
-                comment=f"swaps #{rep}",
+                comment=f"fixed-steps #{rep}",
             )
-        run(kind="D", direction="swaps", step=step, comment=f"swaps #{rep}")
+        run(kind="D", direction="swaps", step=step, comment=f"fixed-steps #{rep}")
 
 
 """ 
