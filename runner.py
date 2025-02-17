@@ -13,8 +13,7 @@ def get_config(
     kind: Literal["AR", "D", "UD"],
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
-    denoise_steps: int | None = None,
-    speed: float | None = None,
+    window: float | int | None = None,
 ):
     if direction == "forward":
         permutation = list(range(20))
@@ -79,8 +78,11 @@ def get_config(
         denoise_steps = len(permutation) + 2
         speed = 1e3
     elif kind == "UD":
-        assert denoise_steps is not None, "denoise_steps must be provided for UD"
-        assert speed is not None, "speed must be provided for UD"
+        N = len(permutation)
+        T = N
+        speed = (N + window) / T
+        denoise_steps = max(1, int(window / speed + 0.5))
+
     output_path = f"models/{uuid.uuid4()}.pt"
     config_updates = {
         "diffusion_config": {
@@ -106,17 +108,16 @@ def run(
     kind: Literal["AR", "D", "UD"],
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
-    speed: float | None = None,
-    denoise_steps: int | None = None,
+    window: float | int | None = None,
     comment: str = "",
 ):
-    config_updates = get_config(kind, direction, step, denoise_steps, speed)
+    config_updates = get_config(kind, direction, step, window)
     denoise_steps = config_updates["diffusion_config"]["denoise_steps"]
     speed = config_updates["diffusion_config"]["speed"]
     ex.run(
         config_updates=config_updates,
         meta_info={
-            "comment": f"k={kind} d={direction} n={denoise_steps} s={speed:.4f} step={step} | {comment}"
+            "comment": f"k={kind} d={direction} n={denoise_steps} s={speed:.4f} w={window} step={step} | {comment}"
         },
     )
 
@@ -126,18 +127,16 @@ direction = "swaps"
 
 for rep in range(5):
     for step in [2, 4]:
-        run(kind="AR", direction="swaps", step=step, comment=f"swaps #rep={rep}")
-        for denoise_steps in [5, 10]:
-            for w in [2, 4, 8]:
-                run(
-                    kind="UD",
-                    direction="swaps",
-                    step=step,
-                    denoise_steps=denoise_steps,
-                    speed=w / denoise_steps,
-                    comment=f"swaps #rep={rep} w={w}",
-                )
-        run(kind="D", direction="swaps", step=step, comment=f"swaps #rep={rep}")
+        run(kind="AR", direction="swaps", step=step, comment=f"swaps #{rep}")
+        for w in [2, 4, 8, 32]:
+            run(
+                kind="UD",
+                direction="swaps",
+                step=step,
+                window=w,
+                comment=f"swaps #{rep}",
+            )
+        run(kind="D", direction="swaps", step=step, comment=f"swaps #{rep}")
 
 
 """ 
