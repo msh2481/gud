@@ -43,11 +43,11 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 1,
+        "epochs": 400,
         "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
-        "eval_every": 10,
+        "eval_every": 50,
         "seed": 42,
     }
 

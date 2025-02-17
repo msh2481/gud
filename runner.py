@@ -9,8 +9,10 @@ from main import ex
 
 @typed
 def get_config(
-    kind: Literal["AR", "D", "GUD"],
-    direction: Literal["forward", "backward", "shuffled", "slightly_shuffled"],
+    kind: Literal["AR", "D", "UD"],
+    direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
+    step: int | None = None,
+    denoise_steps: int | None = None,
 ):
     if direction == "forward":
         permutation = list(range(20))
@@ -62,8 +64,12 @@ def get_config(
             18,
             17,
         ]
-
-    denoise_steps = None
+    elif direction == "swaps":
+        assert step is not None, "step must be provided for swaps"
+        permutation = list(range(20))
+        for i in range(0, len(permutation) - (step - 1), step):
+            j = i + step - 1
+            permutation[i], permutation[j] = permutation[j], permutation[i]
     speed = None
     if kind == "AR":
         denoise_steps = 1
@@ -71,8 +77,9 @@ def get_config(
     elif kind == "D":
         denoise_steps = len(permutation) + 2
         speed = 1e3
-    elif kind == "GUD":
-        denoise_steps = 5
+    elif kind == "UD":
+        if denoise_steps is None:
+            denoise_steps = 5
         speed = 1 / denoise_steps
     config_updates = {
         "diffusion_config": {
@@ -93,11 +100,13 @@ def get_config(
 
 @typed
 def run(
-    kind: Literal["AR", "D", "GUD"],
-    direction: Literal["forward", "backward", "shuffled", "slightly_shuffled"],
-    comment: str,
+    kind: Literal["AR", "D", "UD"],
+    direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
+    step: int | None = None,
+    denoise_steps: int | None = None,
+    comment: str = "",
 ):
-    config_updates = get_config(kind, direction)
+    config_updates = get_config(kind, direction, step, denoise_steps)
     denoise_steps = config_updates["diffusion_config"]["denoise_steps"]
     speed = config_updates["diffusion_config"]["speed"]
     ex.run(
@@ -108,21 +117,23 @@ def run(
     )
 
 
-for kind in ["AR", "D", "GUD"]:
-    for direction in ["forward", "backward", "shuffled", "slightly_shuffled"]:
-        logger.warning(f"Running {kind} {direction}")
-        run(kind=kind, direction=direction, comment="grid")
+kind = "UD"
+direction = "swaps"
 
-# cfg = get_config(kind="AR", direction="forward")
-# del cfg["generator_config"]["permutation"]
-# # cfg["generator_config"]["generator_class"] = "WhiteNoise"
-# cfg["generator_config"]["generator_class"] = "LogisticMapForward"
-# cfg["train_config"]["lr"] = 1e-9
-# pprint(cfg)
-# ex.run(
-#     config_updates=cfg,
-#     meta_info={"comment": "testing AR forward"},
-# )
+run(kind="AR", direction="swaps", step=1, comment="swaps")
+run(kind="D", direction="swaps", step=1, comment="swaps")
+for step in [2, 3, 4, 5]:
+    run(kind="AR", direction="swaps", step=step, comment="swaps")
+    for denoise_steps in [2, 4, 8, 16]:
+        run(
+            kind="UD",
+            direction="swaps",
+            step=step,
+            denoise_steps=denoise_steps,
+            comment="swaps",
+        )
+    run(kind="D", direction="swaps", step=step, comment="swaps")
+
 
 """ 
 model_config = {
