@@ -43,7 +43,7 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 400,
+        "epochs": 250,
         "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
@@ -222,7 +222,7 @@ def get_dataset(
         denoise_steps=diffusion_config["denoise_steps"],
         start_from=diffusion_config["start_from"],
     )
-    # visualize_schedule(schedule)
+    visualize_schedule(schedule)
     dataset = DiffusionDataset(clean_data, schedule)
     train_loader = DataLoader(
         dataset, batch_size=train_config["batch_size"], shuffle=True

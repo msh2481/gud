@@ -206,7 +206,7 @@ def visualize_schedule(schedule: Schedule) -> None:
     plt.imshow(torch.log10(schedule.noise_var), cmap=cmap)
     plt.colorbar()
     plt.tight_layout()
-    plt.show()
+    plt.savefig("schedule.png")
 
 
 if __name__ == "__main__":

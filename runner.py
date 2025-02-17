@@ -1,4 +1,5 @@
 import random
+import uuid
 from pprint import pprint
 
 from beartype import beartype as typed
@@ -13,6 +14,7 @@ def get_config(
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
     denoise_steps: int | None = None,
+    speed: float | None = None,
 ):
     if direction == "forward":
         permutation = list(range(20))
@@ -70,7 +72,6 @@ def get_config(
         for i in range(0, len(permutation) - (step - 1), step):
             j = i + step - 1
             permutation[i], permutation[j] = permutation[j], permutation[i]
-    speed = None
     if kind == "AR":
         denoise_steps = 1
         speed = 1
@@ -78,15 +79,17 @@ def get_config(
         denoise_steps = len(permutation) + 2
         speed = 1e3
     elif kind == "UD":
-        if denoise_steps is None:
-            denoise_steps = 5
-        speed = 1 / denoise_steps
+        assert denoise_steps is not None, "denoise_steps must be provided for UD"
+        assert speed is not None, "speed must be provided for UD"
+    output_path = f"models/{uuid.uuid4()}.pt"
     config_updates = {
         "diffusion_config": {
             "denoise_steps": denoise_steps,
             "speed": speed,
         },
-        "train_config": {},
+        "train_config": {
+            "output_path": output_path,
+        },
         "model_config": {
             "seq_len": len(permutation),
         },
@@ -103,16 +106,17 @@ def run(
     kind: Literal["AR", "D", "UD"],
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
+    speed: float | None = None,
     denoise_steps: int | None = None,
     comment: str = "",
 ):
-    config_updates = get_config(kind, direction, step, denoise_steps)
+    config_updates = get_config(kind, direction, step, denoise_steps, speed)
     denoise_steps = config_updates["diffusion_config"]["denoise_steps"]
     speed = config_updates["diffusion_config"]["speed"]
     ex.run(
         config_updates=config_updates,
         meta_info={
-            "comment": f"k={kind} d={direction} n={denoise_steps} s={speed:.4f} | {comment}"
+            "comment": f"k={kind} d={direction} n={denoise_steps} s={speed:.4f} step={step} | {comment}"
         },
     )
 
@@ -120,19 +124,20 @@ def run(
 kind = "UD"
 direction = "swaps"
 
-run(kind="AR", direction="swaps", step=1, comment="swaps")
-run(kind="D", direction="swaps", step=1, comment="swaps")
-for step in [2, 3, 4, 5]:
-    run(kind="AR", direction="swaps", step=step, comment="swaps")
-    for denoise_steps in [2, 4, 8, 16]:
-        run(
-            kind="UD",
-            direction="swaps",
-            step=step,
-            denoise_steps=denoise_steps,
-            comment="swaps",
-        )
-    run(kind="D", direction="swaps", step=step, comment="swaps")
+for rep in range(5):
+    for step in [2, 4]:
+        run(kind="AR", direction="swaps", step=step, comment=f"swaps #rep={rep}")
+        for denoise_steps in [5, 10]:
+            for w in [2, 4, 8]:
+                run(
+                    kind="UD",
+                    direction="swaps",
+                    step=step,
+                    denoise_steps=denoise_steps,
+                    speed=w / denoise_steps,
+                    comment=f"swaps #rep={rep} w={w}",
+                )
+        run(kind="D", direction="swaps", step=step, comment=f"swaps #rep={rep}")
 
 
 """ 
