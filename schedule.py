@@ -157,7 +157,6 @@ class Schedule:
             else:
                 rig = mid
         mid = (lef + rig) / 2
-        logger.info(f"Base noise level: {mid}")
         betas = mid * torch.arange(1, denoise_steps + 1).float()
         for pos in range(start_from, seq_len):
             start_time = int((seq_len - pos) / speed)
@@ -211,7 +210,29 @@ def visualize_schedule(schedule: Schedule) -> None:
     plt.clf()
 
 
+def test_elbo():
+    def elbo(n: int) -> float:
+        schedule = Schedule.make_rolling(
+            seq_len=20,
+            speed=1e3,
+            denoise_steps=n,
+            final_signal_var=0.01,
+            start_from=0,
+        )
+        pos = 0
+        alpha = schedule.signal_ratio[:, pos]
+        beta = schedule.noise_level[:, pos]
+        pi = schedule.signal_var[:, pos]
+        w = beta[1:] / (alpha[1:] * (1 - pi[1:]))
+        return w.sum().item()
+
+    for n in range(1, 100):
+        print(n, elbo(n))
+
+
 if __name__ == "__main__":
+    test_elbo()
+    exit(0)
     schedule = Schedule.make_rolling(
         seq_len=10,
         speed=0.5,
