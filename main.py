@@ -43,12 +43,11 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 250,
+        "epochs": 200,
         "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
         "eval_every": 10,
-        "seed": 42,
     }
 
     # Diffusion configuration
@@ -182,7 +181,6 @@ def get_samples(model, x_t, schedule, diffusion_config):
 def setup_model(
     _run, model_config: dict, train_config: dict
 ) -> tuple[nn.Module, torch.device]:
-    set_seed(train_config["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     model = Denoiser(
@@ -271,6 +269,7 @@ def save_model(model: nn.Module, train_config: dict, device: torch.device) -> No
 def train_denoiser(_run, model_config, train_config, diffusion_config):
     """Train the denoising model"""
     model, device = setup_model()
+    param_vector = torch.cat([p.data.view(-1) for p in model.parameters()]).detach()
     _generator, _clean_data, _schedule, train_loader = get_dataset()
     opt = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
 
@@ -364,10 +363,8 @@ def animated_sample(
     diffusion_config: dict,
     train_config: dict,
     output_path: str = "denoising_animation.gif",
-    seed: int = 42,
 ):
     """Sample from a trained model"""
-    set_seed(seed)
     model, device = load_model(model_path=train_config["output_path"])
     generator, clean_data, schedule, _train_loader = get_dataset()
     x0 = clean_data[:1].to(device)
@@ -384,7 +381,7 @@ def evaluate(
     _run,
     model_config: dict,
     model_path: str = "denoiser.pt",
-    n_samples: int = 1000,
+    n_samples: int = 100,
     epoch_number: int | None = None,
 ):
     """Evaluate the model"""

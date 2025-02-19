@@ -122,21 +122,20 @@ def run(
     )
 
 
-kind = "UD"
-direction = "swaps"
+name = "slope"
 
-for rep in range(5):
-    for step in [4, 2]:
-        run(kind="AR", direction="swaps", step=step, comment=f"fixed-steps #{rep}")
-        for w in [2, 4, 8, 32]:
+for rep in range(3):
+    for step in [2, 4, 6]:
+        run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
+        for w in [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 24, 32]:
             run(
                 kind="UD",
                 direction="swaps",
                 step=step,
                 window=w,
-                comment=f"fixed-steps #{rep}",
+                comment=f"{name} #{rep}",
             )
-        run(kind="D", direction="swaps", step=step, comment=f"fixed-steps #{rep}")
+        run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
 
 
 """ 

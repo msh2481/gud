@@ -168,7 +168,6 @@ class Schedule:
 
 @typed
 def test_schedule():
-    set_seed(42)
     signal_ratio = torch.randn(3, 5).sigmoid()
     schedule = Schedule.from_noise_level(signal_ratio)
     print("Signal ratio:")

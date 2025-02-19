@@ -15,7 +15,6 @@ from rich.progress import track
 from schedule import Schedule, visualize_schedule
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
-from utils import set_seed
 
 
 class DataGenerator:
@@ -356,10 +355,8 @@ def visualize_data(
     seq_len: int = 20,
     chaos_ratio: float = 1.0,
     save_path: str | None = None,
-    seed: int = 42,
 ):
     """Generate and visualize sample sequences"""
-    # set_seed(seed)
     generator = OneMinusX.load(
         length=seq_len, clauses=OneMinusX.complicated(seq_len), tolerance=1e-3
     )
