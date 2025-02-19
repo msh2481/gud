@@ -239,6 +239,7 @@ def train_batch(
     ],
     opt: torch.optim.Optimizer,
     device: torch.device,
+    schedule: Schedule,
 ) -> float:
     xt, signal_var, signal_ratio, true_noise = batch
     xt, signal_var, signal_ratio, true_noise = (
@@ -251,13 +252,11 @@ def train_batch(
     r = (1 - signal_var / signal_ratio) / (1 - signal_var + 1e-8)
     # for x_1 -> x_0 r is zero, but we don't want to count it, so set it to 1
     r = torch.where(signal_var / signal_ratio > 0.999, torch.ones_like(r), r)
-    r = torch.ones_like(r)
+    r = torch.ones_like(r)  # TODO remove
     weights = (1 - signal_ratio) / (signal_ratio * (1 - signal_var) + 1e-8)
-    loss = (
-        ((r - 1 - r.log()) + (pred_noise - true_noise).square() * weights)
-        .mean(dim=0)
-        .sum()
-    )
+    T = len(schedule.signal_var) - 1
+    losses = (r - 1 - r.log()) + (pred_noise - true_noise).square() * weights
+    loss = T / 2 * (losses.mean(dim=0).sum())
     opt.zero_grad()
     loss.backward()
     opt.step()
@@ -284,7 +283,13 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
     losses = []
     for epoch in range(train_config["epochs"]):
         epoch_losses = [
-            train_batch(model=model, batch=tuple(batch), opt=opt, device=device)
+            train_batch(
+                model=model,
+                batch=tuple(batch),
+                opt=opt,
+                device=device,
+                schedule=_schedule,
+            )
             for batch in train_loader
         ]
         # Compute epoch & avg loss

@@ -76,6 +76,7 @@ def get_config(
         speed = 1
     elif kind == "D":
         denoise_steps = len(permutation) + 2
+        denoise_steps = 100  # TODO remove
         speed = 1e3
     elif kind == "UD":
         N = len(permutation)
