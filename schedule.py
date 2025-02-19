@@ -206,6 +206,9 @@ def visualize_schedule(schedule: Schedule) -> None:
     plt.colorbar()
     plt.tight_layout()
     plt.savefig("schedule.png")
+    plt.close()
+    plt.cla()
+    plt.clf()
 
 
 if __name__ == "__main__":

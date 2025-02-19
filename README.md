@@ -54,7 +54,7 @@ This synthetic dataset serves as a controlled environment to:
 The Unified Diffusion model extends the DDPM (Denoising Diffusion Probabilistic Models) framework by introducing position-specific noise schedules. The core architecture maintains the denoising score matching objective but allows for independent noise levels per token.
 
 Notation from DDPM:
-$$ p(x_{0:T}) = p(x_{T}) \prod_{t=1}^{T} p_{\theta}(x_{t-1} \mid x_{t}),\quad q(x_{1:T}|x_{0}) = \prod_{t=1}^{T} q(x_{t} \mid x_{t-1})$$
+$$ p(x_{0:T}) = p(x_{T}) \prod_{t=1}^{T} p_{\theta}(x_{t-1} \mid x_{t}),\quad q(x_{1:T}|x_{0}) = \prod_{t=1}^{T} q(x_{t} \mid x_{t-1}) $$
 $$ p_{\theta}(x_{t-1}|x_{t}) = \mathcal{N}(x_{t-1}; \mu_{\theta}(x_{t}, t), \sigma_{\theta}(x_{t}, t)),\quad q(x_{t} | x_{t-1}) = \mathcal{N}(x_{t}; \sqrt{1 - \beta_{t}} x_{t-1}, \beta_{t}I) $$
 $$ \alpha_{t}= 1 - \beta_{t},\quad \pi_t = \prod_{s=1}^{t} \alpha_{s} \implies q(x_{t} \mid x_{0}) = \mathcal{N}(x_{t}; \sqrt{\pi_t} x_{0}, (1 - \pi_{t})I) $$
 
@@ -77,7 +77,7 @@ where:
 Sampling follows Langevin dynamics with position-specific noise schedules:
 
 ```python
-x[t-1] = 1/sqrt(alpha[t]) * (x[t] - beta[t]/sqrt(1 - pi[t]) * eps_theta) + sigma * randn()
+x[t-1] = 1/sqrt(alpha[t]) * (x[t] - beta[t]/sqrt(1 - pi[t]) * eps_theta) + sqrt(beta[t-1]) * randn()
 ```
 
 Key parameters:

@@ -248,8 +248,16 @@ def train_batch(
         true_noise.to(device),
     )
     pred_noise = model(xt, signal_var, signal_ratio)
-    delta_var = signal_var * (1 / (signal_ratio + 1e-8) - 1)
-    loss = ((pred_noise - true_noise).square() * delta_var).mean(dim=0).sum()
+    r = (1 - signal_var / signal_ratio) / (1 - signal_var + 1e-8)
+    # for x_1 -> x_0 r is zero, but we don't want to count it, so set it to 1
+    r = torch.where(signal_var / signal_ratio > 0.999, torch.ones_like(r), r)
+    r = torch.ones_like(r)
+    weights = (1 - signal_ratio) / (signal_ratio * (1 - signal_var) + 1e-8)
+    loss = (
+        ((r - 1 - r.log()) + (pred_noise - true_noise).square() * weights)
+        .mean(dim=0)
+        .sum()
+    )
     opt.zero_grad()
     loss.backward()
     opt.step()

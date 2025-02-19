@@ -122,20 +122,23 @@ def run(
     )
 
 
-name = "slope"
+# name = "slope"
+name = "test-ELBO"
 
-for rep in range(3):
-    for step in [2, 4, 6]:
-        run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-        for w in [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 24, 32]:
-            run(
-                kind="UD",
-                direction="swaps",
-                step=step,
-                window=w,
-                comment=f"{name} #{rep}",
-            )
-        run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
+run(kind="D", direction="backward", comment=f"{name}")
+
+# for rep in range(3):
+#     for step in [2, 4, 6]:
+#         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
+#         for w in [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 24, 32]:
+#             run(
+#                 kind="UD",
+#                 direction="swaps",
+#                 step=step,
+#                 window=w,
+#                 comment=f"{name} #{rep}",
+#             )
+#         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
 
 
 """ 
