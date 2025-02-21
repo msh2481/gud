@@ -122,14 +122,24 @@ def run(
     )
 
 
-name = "slope-1"
+name = "slope-2"
 
-# run(kind="AR", direction="backward", comment=f"{name}")
 
 for rep in range(10):
-    for step in [2, 4, 6, 8, 10]:
-        # run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-        for w in [18, 20, 22, 24, 26, 28, 30, 32, 64]:
+    for step in [2, 4, 8]:
+        run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
+        w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
+            12,
+            14,
+            16,
+            20,
+            24,
+            28,
+            32,
+            64,
+            128,
+        ]
+        for w in sorted(list(set(w_candidates))):
             run(
                 kind="UD",
                 direction="swaps",
@@ -137,7 +147,7 @@ for rep in range(10):
                 window=w,
                 comment=f"{name} #{rep}",
             )
-        # run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
+        run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
 
 
 """ 
