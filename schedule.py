@@ -16,7 +16,7 @@ def allclose(a: TT, val: float) -> bool:
     return torch.allclose(a, torch.ones_like(a) * val, atol=1e-6)
 
 
-VAR_0 = 1 - 1e-4
+VAR_0 = 1 - 1e-2
 
 
 class Schedule:

@@ -18,13 +18,15 @@ from sacred.observers import FileStorageObserver, MongoObserver
 from schedule import Schedule, visualize_schedule
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
-from utils import set_seed
 
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
 ex.observers.append(MongoObserver(db_name="sacred"))
 
 EPS = 1e-8
+
+# S = 0 means sigma_t = beta_t, S = 1 means sigma_t = (1 - pi_{t-1}) / (1 - pi_t) beta_t and no variance term is needed
+S = 0.5
 
 
 @ex.config
@@ -49,13 +51,14 @@ def config():
         "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
-        "eval_every": 10,
+        "eval_every": 20,
     }
 
     # Diffusion configuration
     diffusion_config = {
         "window": 1,
         "n_steps": 20,
+        "n_steps_eval": 60,
         "start_from": 0,
     }
 
@@ -135,7 +138,6 @@ class Denoiser(nn.Module):
         x = x.squeeze(-1)  # [batch, seq_len]
 
         if self.predict_x0:
-            x = x * 0
             eps = (noisy_seq - torch.sqrt(signal_var) * x) / torch.sqrt(
                 1 - signal_var + EPS
             )
@@ -161,7 +163,10 @@ def get_samples(model, x_t, schedule, diffusion_config):
         assert not curr_var.isnan().any(), f"curr_var is nan at it={it}"
         alpha = schedule.signal_ratio[it + 1]
         beta_cur = schedule.noise_level[it + 1]
-        beta_next = schedule.noise_level[it]
+        pi_cur = schedule.signal_var[it + 1]
+        pi_prev = schedule.signal_var[it]
+        assert ((1 - pi_prev) / (1 - pi_cur) <= 1).all(), "pi_prev must be >= pi_cur"
+        sigma = beta_cur * (1 - pi_prev) / (1 - pi_cur)
         x_cur = xs[:, it + 1]
         assert not x_cur.isnan().any(), f"x_cur is nan at it={it}"
         pred_noise = model(
@@ -174,7 +179,7 @@ def get_samples(model, x_t, schedule, diffusion_config):
         x_new = upscale_coef * (x_cur - noise_coef * pred_noise)
 
         if it < n_steps - 2:
-            x_new = x_new + torch.sqrt(beta_next) * torch.randn_like(x_new)
+            x_new = x_new + torch.sqrt(sigma) * torch.randn_like(x_new)
         xs[:, it] = x_new
     return xs.flip(dims=[1])
 
@@ -210,6 +215,7 @@ def get_dataset(
     train_config: dict,
     diffusion_config: dict,
     generator_config: dict,
+    inference: bool = False,
 ) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
     generator_class = globals()[generator_config["generator_class"]]
     generator = generator_class(**generator_config)
@@ -220,7 +226,11 @@ def get_dataset(
     schedule = Schedule.make_rolling(
         seq_len=model_config["seq_len"],
         window=diffusion_config["window"],
-        n_steps=diffusion_config["n_steps"],
+        n_steps=(
+            diffusion_config["n_steps"]
+            if not inference
+            else diffusion_config["n_steps_eval"]
+        ),
         start_from=diffusion_config["start_from"],
     )
     visualize_schedule(schedule)
@@ -253,14 +263,12 @@ def train_batch(
     )
     pred_noise = model(xt, signal_var, signal_ratio)
     prev_signal_var = signal_var / signal_ratio
-    r = (1 - prev_signal_var) / (1 - signal_var)
+    k = (1 - prev_signal_var) / (1 - signal_var)
+    r = k ** (1 - S)
     variance_term = r - 1 - r.log()
-    assert not (
-        variance_term.isnan().any() or variance_term.isinf().any()
-    ), "variance_term is nan or inf"
-    weights = (1 - signal_ratio) / (signal_ratio * (1 - signal_var) + EPS)
-    mean_term = weights * (pred_noise - true_noise).square()
+    weights = (1 - signal_ratio) / (k**S * signal_ratio * (1 - signal_var) + EPS)
     T = len(schedule.signal_var) - 1
+    mean_term = weights * (pred_noise - true_noise).square()
     losses = variance_term + mean_term
     loss = T / 2 * (losses.mean(dim=0).sum())
     opt.zero_grad()
@@ -283,7 +291,7 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
     """Train the denoising model"""
     model, device = setup_model()
     param_vector = torch.cat([p.data.view(-1) for p in model.parameters()]).detach()
-    _generator, _clean_data, _schedule, train_loader = get_dataset()
+    _generator, _clean_data, _schedule, train_loader = get_dataset(inference=False)
     opt = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
 
     losses = []
@@ -385,7 +393,7 @@ def animated_sample(
 ):
     """Sample from a trained model"""
     model, device = load_model(model_path=train_config["output_path"])
-    generator, clean_data, schedule, _train_loader = get_dataset()
+    generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
     x0 = clean_data[:1].to(device)
     schedule = schedule.to(device)
     signal_var = schedule.signal_var[-1]
@@ -405,7 +413,7 @@ def evaluate(
 ):
     """Evaluate the model"""
     model, device = load_model(model_path=model_path)
-    generator, clean_data, schedule, _train_loader = get_dataset()
+    generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
     schedule = schedule.to(device)
     signal_var = schedule.signal_var[-1]
     assert (

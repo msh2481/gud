@@ -95,7 +95,8 @@ def get_config(
             "seq_len": len(permutation),
         },
         "generator_config": {
-            "generator_class": "Zero",
+            # "generator_class": "LogisticMapPermutation",
+            "generator_class": "WhiteNoise",
             "length": len(permutation),
             "permutation": permutation,
         },
@@ -127,35 +128,31 @@ def run(
     )
 
 
-# name = "slope-2"
-name = "test-elbo"
+name = "slope-3"
 
-# run(kind="AR", direction="swaps", step=2, comment=f"{name}")
-run(kind="UD", direction="swaps", step=2, window=1e6, n_steps=100, comment=f"{name}")
-
-# for rep in range(10):
-#     for step in [2, 4, 8]:
-#         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-#         w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
-#             12,
-#             14,
-#             16,
-#             20,
-#             24,
-#             28,
-#             32,
-#             64,
-#             128,
-#         ]
-#         for w in sorted(list(set(w_candidates))):
-#             run(
-#                 kind="UD",
-#                 direction="swaps",
-#                 step=step,
-#                 window=w,
-#                 comment=f"{name} #{rep}",
-#             )
-#         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
+for rep in range(10):
+    for step in [1, 2, 4, 8]:
+        run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
+        w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
+            12,
+            14,
+            16,
+            20,
+            24,
+            28,
+            32,
+            64,
+            128,
+        ]
+        for w in sorted(list(set(w_candidates))):
+            run(
+                kind="UD",
+                direction="swaps",
+                step=step,
+                window=w,
+                comment=f"{name} #{rep}",
+            )
+        run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
 
 
 """ 
