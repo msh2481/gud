@@ -125,47 +125,49 @@ class Schedule:
     def make_rolling(
         cls,
         seq_len: int,
+        *,
         n_steps: int | None = None,
         speed: float | None = None,
-        denoise_steps: int = 10,
+        denoise_steps: int | None = None,
+        window: float | None = None,
         start_from: int = 0,
         final_signal_var: float = 1e-2,
-        window: float | None = None,
     ) -> "Schedule":
-        # If window is provided, compute speed and denoise_steps
-        if window is not None:
-            assert n_steps is not None, "n_steps must be provided when using window"
+        """Create a rolling schedule for denoising.
+
+        Two ways to specify the schedule:
+        1. n_steps + window
+        2. speed + denoise_steps
+        """
+        # Compute speed and denoise_steps based on input parameters
+        if window is not None and n_steps is not None:
             speed = int((seq_len + window) / n_steps)
             denoise_steps = max(1, int(window / speed + 0.5))
-        # Otherwise use the original logic
-        elif (n_steps is None) == (speed is None):
+        elif speed is not None and denoise_steps is not None and n_steps is None:
+            n_steps = int((seq_len - start_from) / speed + denoise_steps)
+        else:
             raise ValueError(
-                "Must provide either: (n_steps and window) or (exactly one of n_steps or speed)"
+                "Must provide one of: (n_steps + window), (speed + denoise_steps), or (n_steps + denoise_steps)"
             )
 
-        # Compute schedule only for tokens that need denoising
-        remaining_len = seq_len - start_from
-
-        if n_steps is None:
-            n_steps = int(remaining_len / speed + denoise_steps)
-        elif window is None:
-            assert n_steps > denoise_steps, "n_steps must be greater than denoise_steps"
-            speed = remaining_len / (n_steps - denoise_steps)
-
-        noise_levels = torch.zeros((n_steps, seq_len))
+        # Binary search to find optimal noise scale
+        def get_final_signal_var(scale: float) -> float:
+            betas = scale * torch.arange(1, denoise_steps + 1).float()
+            return torch.prod(1 - betas).item()
 
         lef, rig = 0, 1
         while rig - lef > 1e-9:
             mid = (lef + rig) / 2
-            betas = mid * torch.arange(1, denoise_steps + 1).float()
-            prod_alphas = torch.prod(1 - betas)
-            if prod_alphas > final_signal_var:
+            if get_final_signal_var(mid) > final_signal_var:
                 lef = mid
             else:
                 rig = mid
-        mid = (lef + rig) / 2
-        betas = mid * torch.arange(1, denoise_steps + 1).float()
 
+        # Create noise schedule
+        noise_levels = torch.zeros((n_steps, seq_len))
+        betas = ((lef + rig) / 2) * torch.arange(1, denoise_steps + 1).float()
+
+        # Apply rolling noise pattern
         for pos in range(start_from, seq_len):
             start_time = min(
                 max(0, int((seq_len - pos) / speed)), n_steps - denoise_steps
