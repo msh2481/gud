@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 import typer
 from beartype import beartype as typed
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from loguru import logger
 from matplotlib import pyplot as plt
 from rich.progress import track
@@ -347,6 +347,12 @@ class DiffusionDataset(Dataset):
     def __init__(self, data: Float[TT, "batch seq_len"], schedule: Schedule):
         self.data = data
         self.schedule = schedule
+        self.sampling_probs = None
+
+    @typed
+    def set_sampling_probs(self, probs: Float[TT, "n_steps"] | None) -> None:
+        """Set the sampling probabilities for importance sampling."""
+        self.sampling_probs = probs
 
     @typed
     def __getitem__(self, idx: int) -> tuple[
@@ -354,12 +360,15 @@ class DiffusionDataset(Dataset):
         Float[TT, "seq_len"],  # signal_var
         Float[TT, "seq_len"],  # signal_ratio
         Float[TT, "seq_len"],  # noise
+        Int[TT, ""],  # timestep
     ]:
         x0 = self.data[idx]
-        signal_var, signal_ratio = self.schedule.sample_signal_var()
+        signal_var, signal_ratio, timestep = self.schedule.sample_signal_var(
+            self.sampling_probs
+        )
         noise = torch.randn_like(x0)
         xt = torch.sqrt(signal_var) * x0 + torch.sqrt(1 - signal_var) * noise
-        return xt, signal_var, signal_ratio, noise
+        return xt, signal_var, signal_ratio, noise, timestep
 
     def __len__(self):
         return len(self.data)
@@ -412,7 +421,7 @@ def visualize_dataset():
     visualize_schedule(schedule)
     dataset = DiffusionDataset(clean_data, schedule)
     for _ in range(3):
-        xt, signal_var, signal_ratio, noise = dataset[0]
+        xt, signal_var, signal_ratio, noise, timestep = dataset[0]
         plt.plot(xt, label=f"xt")
         plt.plot(signal_var, label=f"signal_var")
         plt.plot(signal_ratio, label=f"signal_ratio")

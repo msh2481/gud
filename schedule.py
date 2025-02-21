@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from loguru import logger
 from matplotlib import pyplot as plt
 from numpy import ndarray as ND
@@ -52,9 +52,17 @@ class Schedule:
     @typed
     def sample_signal_var(
         self,
-    ) -> tuple[Float[TT, "seq_len"], Float[TT, "seq_len"]]:
-        pos = torch.randint(1, self.signal_var.shape[0], ())
-        return self.signal_var[pos], self.signal_ratio[pos]
+        probs: Float[TT, "n_steps"] | None = None,
+    ) -> tuple[Float[TT, "seq_len"], Float[TT, "seq_len"], Int[TT, ""]]:
+        if probs is None:
+            # Uniform sampling
+            pos = torch.randint(1, self.signal_var.shape[0], (1,))[0]
+        else:
+            # Importance sampling
+            pos = (
+                torch.multinomial(probs[1:], 1)[0] + 1
+            )  # Skip first timestep (clean data)
+        return self.signal_var[pos], self.signal_ratio[pos], pos
 
     @typed
     def assert_invariants(self):
@@ -180,7 +188,7 @@ class Schedule:
         # Create noise schedule
         noise_levels = torch.zeros((n_steps, seq_len))
         betas = ((lef + rig) / 2) * torch.linspace(1, 10, denoise_steps).float()
-        logger.info(f"betas: {betas}")
+        # logger.info(f"betas: {betas}")
 
         # Apply rolling noise pattern
         for pos in range(start_from, seq_len):

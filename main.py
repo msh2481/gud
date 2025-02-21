@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
 from data import *
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from loguru import logger
 from matplotlib import pyplot as plt
 from numpy import ndarray as ND
@@ -249,12 +249,15 @@ def train_batch(
         Float[TT, "batch seq_len"],  # signal_var
         Float[TT, "batch seq_len"],  # signal_ratio
         Float[TT, "batch seq_len"],  # true_noise
+        Int[TT, "batch"],  # timestep
     ],
     opt: torch.optim.Optimizer,
     device: torch.device,
     schedule: Schedule,
+    loss_stats: Float[TT, "n_steps"] | None = None,  # Now a tensor of EMA values
+    dataset: DiffusionDataset | None = None,
 ) -> float:
-    xt, signal_var, signal_ratio, true_noise = batch
+    xt, signal_var, signal_ratio, true_noise, timesteps = batch
     xt, signal_var, signal_ratio, true_noise = (
         xt.to(device),
         signal_var.to(device),
@@ -269,8 +272,31 @@ def train_batch(
     weights = (1 - signal_ratio) / (k**S * signal_ratio * (1 - signal_var) + EPS)
     T = len(schedule.signal_var) - 1
     mean_term = weights * (pred_noise - true_noise).square()
-    losses = variance_term + mean_term
-    loss = T / 2 * (losses.mean(dim=0).sum())
+    losses = T / 2 * (variance_term + mean_term).sum(dim=-1)
+    assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
+
+    # Apply importance sampling weight correction if using non-uniform sampling
+    sampling_probs = dataset.sampling_probs
+    if sampling_probs is not None:
+        correction = 1.0 / (T * sampling_probs[timesteps])
+        losses = losses * correction
+
+    loss = losses.mean()
+
+    # Update EMA of losses per timestep
+    if loss_stats is not None:
+        alpha = 0.9  # EMA decay rate
+        batch_losses = losses.detach()
+        for t, l in zip(timesteps, batch_losses):
+            loss_stats[t] = alpha * loss_stats[t] + (1 - alpha) * l
+        # Update sampling probabilities based on EMA losses
+        new_probs = loss_stats.abs()
+        new_probs /= new_probs.sum() + EPS
+
+        # Update dataset's sampling probabilities if provided
+        if dataset is not None:
+            dataset.set_sampling_probs(new_probs)
+
     opt.zero_grad()
     loss.backward()
     opt.step()
@@ -294,31 +320,47 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
     _generator, _clean_data, _schedule, train_loader = get_dataset(inference=False)
     opt = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
 
+    n_steps = len(_schedule.signal_var)
+    loss_stats = torch.ones(n_steps, device=device) * 100
+
     losses = []
     for epoch in range(train_config["epochs"]):
-        epoch_losses = [
-            train_batch(
+        epoch_losses = []
+
+        for batch in train_loader:
+            loss = train_batch(
                 model=model,
                 batch=tuple(batch),
                 opt=opt,
                 device=device,
                 schedule=_schedule,
+                loss_stats=loss_stats,
+                dataset=train_loader.dataset,
             )
-            for batch in train_loader
-        ]
+            epoch_losses.append(loss)
+
         # Compute epoch & avg loss
         current_loss = sum(epoch_losses) / len(epoch_losses)
         losses.append(current_loss)
         half = len(losses) // 2
         avg_loss = sum(losses[half:]) / len(losses[half:])
         logger.info(f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f})")
+
+        # sampling_probs = loss_stats / (loss_stats.sum() + EPS)
+        # logger.info(f"EMA losses: {loss_stats}")
+        # logger.info(
+        #     f"Sampling probs: {sampling_probs}\n Sample from them: {sorted((torch.multinomial(sampling_probs[1:], 30) + 1).tolist())}"
+        # )
+
         # Log metrics to Sacred
         _run.log_scalar("loss", current_loss, epoch)
         _run.log_scalar("avg_loss", avg_loss, epoch)
+
         # Save model & evaluate
         if epoch % train_config["eval_every"] == 0:
             save_model(model=model, device=device)
             evaluate(model_path=train_config["output_path"], epoch_number=epoch)
+
     save_model(model=model, device=device)
 
 
