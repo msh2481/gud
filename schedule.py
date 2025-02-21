@@ -164,7 +164,9 @@ class Schedule:
 
         # Binary search to find optimal noise scale
         def get_final_signal_var(scale: float) -> float:
-            betas = scale * torch.arange(1, denoise_steps + 1).float()
+            betas = scale * torch.linspace(1, 10, denoise_steps).float()
+            if betas.max() >= 1:
+                return 0.0
             return torch.prod(1 - betas).item()
 
         lef, rig = 0, 1
@@ -177,7 +179,8 @@ class Schedule:
 
         # Create noise schedule
         noise_levels = torch.zeros((n_steps, seq_len))
-        betas = ((lef + rig) / 2) * torch.arange(1, denoise_steps + 1).float()
+        betas = ((lef + rig) / 2) * torch.linspace(1, 10, denoise_steps).float()
+        logger.info(f"betas: {betas}")
 
         # Apply rolling noise pattern
         for pos in range(start_from, seq_len):

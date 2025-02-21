@@ -74,7 +74,7 @@ def get_config(
             permutation[i], permutation[j] = permutation[j], permutation[i]
 
     if n_steps is None:
-        n_steps = len(permutation) * 3
+        raise ValueError("n_steps must be provided")
     if kind == "AR":
         window = 1
     elif kind == "D":
@@ -112,6 +112,8 @@ def run(
     n_steps: int | None = None,
     comment: str = "",
 ):
+    if n_steps is None:
+        n_steps = 1000
     config_updates = get_config(
         kind=kind,
         direction=direction,
