@@ -1,3 +1,5 @@
+from math import ceil
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -141,10 +143,15 @@ class Schedule:
         """
         # Compute speed and denoise_steps based on input parameters
         if window is not None and n_steps is not None:
-            speed = int((seq_len + window) / n_steps)
+            speed = (seq_len + window - 1) / n_steps
             denoise_steps = max(1, int(window / speed + 0.5))
+            # n_steps = int(ceil((seq_len - 1 - start_from) / speed)) + denoise_steps
         elif speed is not None and denoise_steps is not None and n_steps is None:
-            n_steps = int((seq_len - start_from) / speed + denoise_steps)
+            # 0 step: first step denoising start_from
+            # k step: first step denoising seq_len - 1
+            # k + denoise_steps - 1 step: last step denoising seq_len - 1
+            # k = (seq_len - 1 - start_from) / speed
+            n_steps = int(ceil((seq_len - 1 - start_from) / speed)) + denoise_steps
         else:
             raise ValueError(
                 "Must provide one of: (n_steps + window), (speed + denoise_steps), or (n_steps + denoise_steps)"
@@ -169,12 +176,9 @@ class Schedule:
 
         # Apply rolling noise pattern
         for pos in range(start_from, seq_len):
-            start_time = min(
-                max(0, int((seq_len - pos) / speed)), n_steps - denoise_steps
-            )
-            end_time = min(start_time + denoise_steps, n_steps)
-            if end_time > start_time:
-                noise_levels[start_time:end_time, pos] = betas[: end_time - start_time]
+            start_time = max(0, int(0.5 + (seq_len - 1 - pos) / speed))
+            end_time = start_time + denoise_steps
+            noise_levels[start_time:end_time, pos] = betas[: end_time - start_time]
 
         return cls.from_noise_level(noise_levels)
 
