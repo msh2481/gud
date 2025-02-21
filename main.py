@@ -54,8 +54,8 @@ def config():
 
     # Diffusion configuration
     diffusion_config = {
-        "denoise_steps": 1,
-        "speed": 1,
+        "window": 1,
+        "n_steps": 20,
         "start_from": 0,
     }
 
@@ -135,6 +135,7 @@ class Denoiser(nn.Module):
         x = x.squeeze(-1)  # [batch, seq_len]
 
         if self.predict_x0:
+            x = x * 0
             eps = (noisy_seq - torch.sqrt(signal_var) * x) / torch.sqrt(
                 1 - signal_var + EPS
             )
@@ -218,8 +219,8 @@ def get_dataset(
     clean_data = generator.data[: train_config["dataset_size"]]
     schedule = Schedule.make_rolling(
         seq_len=model_config["seq_len"],
-        speed=diffusion_config["speed"],
-        denoise_steps=diffusion_config["denoise_steps"],
+        window=diffusion_config["window"],
+        n_steps=diffusion_config["n_steps"],
         start_from=diffusion_config["start_from"],
     )
     visualize_schedule(schedule)
@@ -251,13 +252,16 @@ def train_batch(
         true_noise.to(device),
     )
     pred_noise = model(xt, signal_var, signal_ratio)
-    r = (1 - signal_var / signal_ratio) / (1 - signal_var + EPS)
-    # for x_1 -> x_0 r is zero, but we don't want to count it, so set it to 1
-    r = torch.where(signal_var / signal_ratio > 0.999, torch.ones_like(r), r)
+    prev_signal_var = signal_var / signal_ratio
+    r = (1 - prev_signal_var) / (1 - signal_var)
+    variance_term = r - 1 - r.log()
+    assert not (
+        variance_term.isnan().any() or variance_term.isinf().any()
+    ), "variance_term is nan or inf"
     weights = (1 - signal_ratio) / (signal_ratio * (1 - signal_var) + EPS)
-    errors = (pred_noise - true_noise).square()
+    mean_term = weights * (pred_noise - true_noise).square()
     T = len(schedule.signal_var) - 1
-    losses = (r - 1 - r.log()) + errors * weights
+    losses = variance_term + mean_term
     loss = T / 2 * (losses.mean(dim=0).sum())
     opt.zero_grad()
     loss.backward()

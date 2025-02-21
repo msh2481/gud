@@ -16,6 +16,9 @@ def allclose(a: TT, val: float) -> bool:
     return torch.allclose(a, torch.ones_like(a) * val, atol=1e-6)
 
 
+VAR_0 = 1 - 1e-4
+
+
 class Schedule:
     signal_ratio: Float[TT, "n_steps seq_len"]  # aka alpha
     noise_level: Float[TT, "n_steps seq_len"]  # aka beta
@@ -47,7 +50,9 @@ class Schedule:
         )
 
     @typed
-    def sample_signal_var(self) -> tuple[Float[TT, "seq_len"], Float[TT, "seq_len"]]:
+    def sample_signal_var(
+        self,
+    ) -> tuple[Float[TT, "seq_len"], Float[TT, "seq_len"]]:
         pos = torch.randint(1, self.signal_var.shape[0], ())
         return self.signal_var[pos], self.signal_ratio[pos]
 
@@ -84,8 +89,8 @@ class Schedule:
             self.signal_var + self.noise_var, 1
         ), "signal_var + noise_var must be 1"
         # x[0] is not noised
-        assert allclose(self.signal_var[0, :], 1), "x[0] must be signal"
-        assert allclose(self.signal_ratio[0, :], 1), "x[0] must be not ratioed"
+        assert allclose(self.signal_var[0, :], VAR_0), "x[0] must be signal"
+        assert allclose(self.signal_ratio[0, :], VAR_0), "x[0] must be not ratioed"
         # signal_var is prod(signal_ratio)
         for i in range(1, self.signal_ratio.shape[0]):
             assert allclose(
@@ -98,7 +103,7 @@ class Schedule:
         cls, signal_ratio: Float[TT, "n_steps seq_len"]
     ) -> "Schedule":
         signal_ratio = torch.cat(
-            [torch.ones(1, signal_ratio.shape[1]), signal_ratio], dim=0
+            [torch.ones(1, signal_ratio.shape[1]) * VAR_0, signal_ratio], dim=0
         )
         noise_level = 1 - signal_ratio
         signal_var = torch.cumprod(signal_ratio, dim=0)
@@ -108,7 +113,7 @@ class Schedule:
     @classmethod
     def from_noise_level(cls, noise_level: Float[TT, "n_steps seq_len"]) -> "Schedule":
         noise_level = torch.cat(
-            [torch.zeros(1, noise_level.shape[1]), noise_level], dim=0
+            [torch.ones(1, noise_level.shape[1]) * (1 - VAR_0), noise_level], dim=0
         )
         signal_ratio = 1 - noise_level
         signal_var = torch.cumprod(signal_ratio, dim=0)
@@ -117,7 +122,7 @@ class Schedule:
 
     @classmethod
     def from_signal_var(cls, signal_var: Float[TT, "n_steps seq_len"]) -> "Schedule":
-        signal_ratio = torch.ones_like(signal_var)
+        signal_ratio = torch.ones_like(signal_var) * VAR_0
         signal_ratio[1:] = signal_var[1:] / signal_var[:-1]
         noise_level = 1 - signal_ratio
         noise_var = 1 - signal_var

@@ -14,6 +14,7 @@ def get_config(
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
     window: float | int | None = None,
+    n_steps: int | None = None,
 ):
     if direction == "forward":
         permutation = list(range(20))
@@ -71,23 +72,21 @@ def get_config(
         for i in range(0, len(permutation) - (step - 1), step):
             j = i + step - 1
             permutation[i], permutation[j] = permutation[j], permutation[i]
+
+    if n_steps is None:
+        n_steps = len(permutation)
     if kind == "AR":
-        denoise_steps = 1
-        speed = 1
+        window = 1
     elif kind == "D":
-        denoise_steps = len(permutation) + 2
-        speed = 1e3
+        window = 1
     elif kind == "UD":
-        N = len(permutation)
-        T = N
-        speed = int((N + window) / T)
-        denoise_steps = max(1, int(window / speed + 0.5))
+        assert window is not None, "window must be provided for UD"
 
     output_path = f"models/{uuid.uuid4()}.pt"
     config_updates = {
         "diffusion_config": {
-            "denoise_steps": denoise_steps,
-            "speed": speed,
+            "window": window,
+            "n_steps": n_steps,
         },
         "train_config": {
             "output_path": output_path,
@@ -96,6 +95,7 @@ def get_config(
             "seq_len": len(permutation),
         },
         "generator_config": {
+            "generator_class": "Zero",
             "length": len(permutation),
             "permutation": permutation,
         },
@@ -109,45 +109,53 @@ def run(
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
     window: float | int | None = None,
+    n_steps: int | None = None,
     comment: str = "",
 ):
-    config_updates = get_config(kind, direction, step, window)
-    denoise_steps = config_updates["diffusion_config"]["denoise_steps"]
-    speed = config_updates["diffusion_config"]["speed"]
+    config_updates = get_config(
+        kind=kind,
+        direction=direction,
+        step=step,
+        window=window,
+        n_steps=n_steps,
+    )
     ex.run(
         config_updates=config_updates,
         meta_info={
-            "comment": f"k={kind} d={direction} n={denoise_steps} s={speed:.4f} w={window} step={step} | {comment}"
+            "comment": f"k={kind} d={direction} w={window} T={n_steps} step={step} | {comment}"
         },
     )
 
 
-name = "slope-2"
+# name = "slope-2"
+name = "test-elbo"
 
+# run(kind="AR", direction="swaps", step=2, comment=f"{name}")
+run(kind="UD", direction="swaps", step=2, window=1e6, n_steps=100, comment=f"{name}")
 
-for rep in range(10):
-    for step in [2, 4, 8]:
-        run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-        w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
-            12,
-            14,
-            16,
-            20,
-            24,
-            28,
-            32,
-            64,
-            128,
-        ]
-        for w in sorted(list(set(w_candidates))):
-            run(
-                kind="UD",
-                direction="swaps",
-                step=step,
-                window=w,
-                comment=f"{name} #{rep}",
-            )
-        run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
+# for rep in range(10):
+#     for step in [2, 4, 8]:
+#         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
+#         w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
+#             12,
+#             14,
+#             16,
+#             20,
+#             24,
+#             28,
+#             32,
+#             64,
+#             128,
+#         ]
+#         for w in sorted(list(set(w_candidates))):
+#             run(
+#                 kind="UD",
+#                 direction="swaps",
+#                 step=step,
+#                 window=w,
+#                 comment=f"{name} #{rep}",
+#             )
+#         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
 
 
 """ 

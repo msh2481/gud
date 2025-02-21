@@ -129,6 +129,22 @@ class WhiteNoise(DataGenerator):
         return result
 
 
+class Zero(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> TT:
+        return torch.zeros((batch_size, self.init_params["length"]))
+
+    @typed
+    def losses_per_clause(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch 1"]:
+        return x.square().mean(dim=-1, keepdim=True)
+
+    @typed
+    def sample(self, batch_size: int, debug: bool = False) -> TT:
+        result = torch.zeros((batch_size, self.init_params["length"]))
+        self.data = torch.cat([self.data, result], dim=0)
+        return result
+
+
 class Zigzag(DataGenerator):
     @typed
     def random_init(self, batch_size: int) -> TT:
