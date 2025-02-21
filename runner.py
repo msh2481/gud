@@ -74,7 +74,7 @@ def get_config(
             permutation[i], permutation[j] = permutation[j], permutation[i]
 
     if n_steps is None:
-        n_steps = len(permutation)
+        n_steps = len(permutation) * 3
     if kind == "AR":
         window = 1
     elif kind == "D":
@@ -95,8 +95,7 @@ def get_config(
             "seq_len": len(permutation),
         },
         "generator_config": {
-            # "generator_class": "LogisticMapPermutation",
-            "generator_class": "WhiteNoise",
+            "generator_class": "LogisticMapPermutation",
             "length": len(permutation),
             "permutation": permutation,
         },

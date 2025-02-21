@@ -26,7 +26,7 @@ ex.observers.append(MongoObserver(db_name="sacred"))
 EPS = 1e-8
 
 # S = 0 means sigma_t = beta_t, S = 1 means sigma_t = (1 - pi_{t-1}) / (1 - pi_t) beta_t and no variance term is needed
-S = 0.5
+S = 0.0
 
 
 @ex.config
