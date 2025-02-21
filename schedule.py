@@ -130,20 +130,27 @@ class Schedule:
         denoise_steps: int = 10,
         start_from: int = 0,
         final_signal_var: float = 1e-2,
+        window: float | None = None,
     ) -> "Schedule":
-        if (n_steps is None) == (speed is None):
-            raise ValueError("Exactly one of n_steps or speed must be provided")
+        # If window is provided, compute speed and denoise_steps
+        if window is not None:
+            assert n_steps is not None, "n_steps must be provided when using window"
+            speed = int((seq_len + window) / n_steps)
+            denoise_steps = max(1, int(window / speed + 0.5))
+        # Otherwise use the original logic
+        elif (n_steps is None) == (speed is None):
+            raise ValueError(
+                "Must provide either: (n_steps and window) or (exactly one of n_steps or speed)"
+            )
 
         # Compute schedule only for tokens that need denoising
         remaining_len = seq_len - start_from
 
         if n_steps is None:
             n_steps = int(remaining_len / speed + denoise_steps)
-            # logger.debug(f"Computed n_steps: {n_steps}")
-        else:
+        elif window is None:
             assert n_steps > denoise_steps, "n_steps must be greater than denoise_steps"
             speed = remaining_len / (n_steps - denoise_steps)
-            # logger.debug(f"Computed speed: {speed}")
 
         noise_levels = torch.zeros((n_steps, seq_len))
 
@@ -158,10 +165,15 @@ class Schedule:
                 rig = mid
         mid = (lef + rig) / 2
         betas = mid * torch.arange(1, denoise_steps + 1).float()
+
         for pos in range(start_from, seq_len):
-            start_time = int((seq_len - pos) / speed)
-            end_time = start_time + denoise_steps
-            noise_levels[start_time:end_time, pos] = betas
+            start_time = min(
+                max(0, int((seq_len - pos) / speed)), n_steps - denoise_steps
+            )
+            end_time = min(start_time + denoise_steps, n_steps)
+            if end_time > start_time:
+                noise_levels[start_time:end_time, pos] = betas[: end_time - start_time]
+
         return cls.from_noise_level(noise_levels)
 
 

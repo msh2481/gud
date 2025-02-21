@@ -24,7 +24,7 @@ from utils import set_seed
 ex = Experiment("denoising_diffusion")
 ex.observers.append(MongoObserver(db_name="sacred"))
 
-EPS = 1e-20
+EPS = 1e-8
 
 
 @ex.config
@@ -48,7 +48,7 @@ def config():
         "epochs": 200,
         "batch_size": 32,
         "dataset_size": 2000,
-        "lr": 1e-4,
+        "lr": 1e-3,
         "eval_every": 10,
     }
 
@@ -254,10 +254,8 @@ def train_batch(
     r = (1 - signal_var / signal_ratio) / (1 - signal_var + EPS)
     # for x_1 -> x_0 r is zero, but we don't want to count it, so set it to 1
     r = torch.where(signal_var / signal_ratio > 0.999, torch.ones_like(r), r)
-    # r = torch.ones_like(r)  # TODO remove
     weights = (1 - signal_ratio) / (signal_ratio * (1 - signal_var) + EPS)
     errors = (pred_noise - true_noise).square()
-    errors = errors * 0 + 1  # TODO remove
     T = len(schedule.signal_var) - 1
     losses = (r - 1 - r.log()) + errors * weights
     loss = T / 2 * (losses.mean(dim=0).sum())

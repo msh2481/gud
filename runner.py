@@ -76,7 +76,6 @@ def get_config(
         speed = 1
     elif kind == "D":
         denoise_steps = len(permutation) + 2
-        denoise_steps = 1000  # TODO remove
         speed = 1e3
     elif kind == "UD":
         N = len(permutation)
@@ -123,23 +122,22 @@ def run(
     )
 
 
-# name = "slope"
-name = "test-ELBO"
+name = "slope-1"
 
-run(kind="D", direction="backward", comment=f"{name}")
+# run(kind="AR", direction="backward", comment=f"{name}")
 
-# for rep in range(3):
-#     for step in [2, 4, 6]:
-#         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-#         for w in [2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 24, 32]:
-#             run(
-#                 kind="UD",
-#                 direction="swaps",
-#                 step=step,
-#                 window=w,
-#                 comment=f"{name} #{rep}",
-#             )
-#         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
+for rep in range(10):
+    for step in [2, 4, 6, 8, 10]:
+        # run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
+        for w in [18, 20, 22, 24, 26, 28, 30, 32, 64]:
+            run(
+                kind="UD",
+                direction="swaps",
+                step=step,
+                window=w,
+                comment=f"{name} #{rep}",
+            )
+        # run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
 
 
 """ 
