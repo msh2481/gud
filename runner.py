@@ -113,7 +113,7 @@ def run(
     comment: str = "",
 ):
     if n_steps is None:
-        n_steps = 1000
+        n_steps = 60
     config_updates = get_config(
         kind=kind,
         direction=direction,
@@ -129,7 +129,7 @@ def run(
     )
 
 
-name = "slope-3"
+name = "slope-4"
 
 for rep in range(10):
     for step in [1, 2, 4, 8]:
@@ -154,28 +154,3 @@ for rep in range(10):
                 comment=f"{name} #{rep}",
             )
         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
-
-
-""" 
-model_config = {
-    "seq_len": 20,
-    "n_heads": 16,
-    "n_layers": 4,
-    "predict_x0": True,
-}
-train_config = {
-    "epochs": 100,
-    "batch_size": 32,
-    "dataset_size": 2000,
-    "lr": 1e-3,
-}
-diffusion_config = {
-    "denoise_steps": 1,
-    "speed": 1,
-    "generator_class": "LogisticMapPermutation",
-}
-generator_config = {
-    "length": 20,
-    "permutation": list(range(20)),
-}
-"""
