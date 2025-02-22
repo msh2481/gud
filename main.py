@@ -40,7 +40,7 @@ def config():
         "n_heads": 16,
         "n_layers": 4,
         "dropout": 0.0,
-        "predict_x0": True,
+        "predict_x0": False,
         "use_causal_mask": False,
     }
 
@@ -52,6 +52,7 @@ def config():
         "dataset_size": 2000,
         "lr": 1e-3,
         "eval_every": 20,
+        "importance_sampling": False,
     }
 
     # Diffusion configuration
@@ -86,7 +87,7 @@ class Denoiser(nn.Module):
         self.predict_x0 = predict_x0
         self.use_causal_mask = use_causal_mask
         self.pos_encoding = nn.Parameter(torch.zeros(1, seq_len, d_model))
-        self.input_proj = nn.Linear(2, d_model)
+        self.input_proj = nn.Linear(3, d_model)
 
         mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1)
         mask = mask.masked_fill(mask == 1, float("-inf"))
@@ -127,7 +128,9 @@ class Denoiser(nn.Module):
         signal_var: Float[TT, "batch seq_len"],
         signal_ratio: Float[TT, "batch seq_len"],
     ) -> Float[TT, "batch seq_len"]:
-        x = torch.stack([noisy_seq, signal_var], dim=-1)  # [batch, seq_len, 2]
+        x = torch.stack(
+            [noisy_seq, torch.sqrt(signal_var), torch.sqrt(1 - signal_var)], dim=-1
+        )  # [batch, seq_len, 2]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding
         if self.use_causal_mask:
@@ -241,6 +244,7 @@ def get_dataset(
     return generator, clean_data, schedule, train_loader
 
 
+@ex.capture
 @typed
 def train_batch(
     model: nn.Module,
@@ -256,6 +260,7 @@ def train_batch(
     schedule: Schedule,
     loss_stats: Float[TT, "n_steps"] | None = None,  # Now a tensor of EMA values
     dataset: DiffusionDataset | None = None,
+    train_config: dict | None = None,
 ) -> float:
     xt, signal_var, signal_ratio, true_noise, timesteps = batch
     xt, signal_var, signal_ratio, true_noise = (
@@ -288,14 +293,10 @@ def train_batch(
         alpha = 0.9  # EMA decay rate
         batch_losses = losses.detach()
         for t, l in zip(timesteps, batch_losses):
-            loss_stats[t] = alpha * loss_stats[t] + (1 - alpha) * l
-        # Update sampling probabilities based on EMA losses
-        new_probs = loss_stats.abs()
-        new_probs /= new_probs.sum() + EPS
-
-        # Update dataset's sampling probabilities if provided
-        if dataset is not None:
-            dataset.set_sampling_probs(new_probs)
+            if loss_stats[t] > 1e4:
+                loss_stats[t] = l
+            else:
+                loss_stats[t] = alpha * loss_stats[t] + (1 - alpha) * l
 
     opt.zero_grad()
     loss.backward()
@@ -321,7 +322,7 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
     opt = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
 
     n_steps = len(_schedule.signal_var)
-    loss_stats = torch.ones(n_steps, device=device) * 100
+    loss_stats = torch.ones(n_steps, device=device) * 1e9
 
     losses = []
     for epoch in range(train_config["epochs"]):
@@ -339,6 +340,12 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
             )
             epoch_losses.append(loss)
 
+        if train_config["importance_sampling"]:
+            sampling_probs = loss_stats.abs()
+            sampling_probs /= sampling_probs.sum() + EPS
+            if train_loader.dataset is not None:
+                train_loader.dataset.set_sampling_probs(sampling_probs)
+
         # Compute epoch & avg loss
         current_loss = sum(epoch_losses) / len(epoch_losses)
         losses.append(current_loss)
@@ -347,9 +354,9 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         logger.info(f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f})")
 
         # sampling_probs = loss_stats / (loss_stats.sum() + EPS)
-        # logger.info(f"EMA losses: {loss_stats}")
+        # logger.info(f"EMA losses: {loss_stats[:30]}")
         # logger.info(
-        #     f"Sampling probs: {sampling_probs}\n Sample from them: {sorted((torch.multinomial(sampling_probs[1:], 30) + 1).tolist())}"
+        #     f"Sample from them: {sorted((torch.multinomial(sampling_probs[1:], 30) + 1).tolist())}"
         # )
 
         # Log metrics to Sacred

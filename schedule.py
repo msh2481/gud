@@ -192,7 +192,9 @@ class Schedule:
 
         # Apply rolling noise pattern
         for pos in range(start_from, seq_len):
-            start_time = max(0, int(0.5 + (seq_len - 1 - pos) / speed))
+            start_time = min(
+                max(0, int(0.5 + (seq_len - 1 - pos) / speed)), n_steps - denoise_steps
+            )
             end_time = start_time + denoise_steps
             noise_levels[start_time:end_time, pos] = betas[: end_time - start_time]
 
