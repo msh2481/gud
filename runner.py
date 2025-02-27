@@ -78,7 +78,7 @@ def get_config(
     if kind == "AR":
         window = 1
     elif kind == "D":
-        window = 1
+        window = 256
     elif kind == "UD":
         assert window is not None, "window must be provided for UD"
 
@@ -87,6 +87,7 @@ def get_config(
         "diffusion_config": {
             "window": window,
             "n_steps": n_steps,
+            "n_steps_eval": n_steps,
         },
         "train_config": {
             "output_path": output_path,
@@ -113,7 +114,7 @@ def run(
     comment: str = "",
 ):
     if n_steps is None:
-        n_steps = 60
+        n_steps = 400
     config_updates = get_config(
         kind=kind,
         direction=direction,
@@ -131,18 +132,18 @@ def run(
 
 name = "slope-4"
 
+
 for rep in range(10):
-    for step in [1, 2, 4, 8]:
+    for step in [1, 2, 4, 8, 12]:
         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
         w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
+            2,
+            4,
+            8,
             12,
-            14,
             16,
-            20,
             24,
-            28,
             32,
-            64,
             128,
         ]
         for w in sorted(list(set(w_candidates))):

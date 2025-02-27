@@ -19,6 +19,9 @@ from schedule import Schedule, visualize_schedule
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 
+# Set default tensor type to float64 (double precision)
+torch.set_default_dtype(torch.float64)
+
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
 ex.observers.append(MongoObserver(db_name="sacred"))
@@ -58,8 +61,8 @@ def config():
     # Diffusion configuration
     diffusion_config = {
         "window": 1,
-        "n_steps": 20,
-        "n_steps_eval": 60,
+        "n_steps": 400,
+        "n_steps_eval": 400,
         "start_from": 0,
     }
 
@@ -156,6 +159,15 @@ def get_samples(model, x_t, schedule, diffusion_config):
     n_steps = len(schedule.signal_var)
     batch_size, seq_len = x_t.shape
 
+    # Assert that tensors are float64
+    assert x_t.dtype == torch.float64, f"x_t should be float64, got {x_t.dtype}"
+    assert (
+        schedule.signal_var.dtype == torch.float64
+    ), f"schedule.signal_var should be float64, got {schedule.signal_var.dtype}"
+    assert (
+        schedule.signal_ratio.dtype == torch.float64
+    ), f"schedule.signal_ratio should be float64, got {schedule.signal_ratio.dtype}"
+
     # Store all intermediate steps [batch, n_steps, seq_len]
     xs = torch.zeros(batch_size, n_steps, seq_len, device=device)
     xs[:, -1] = x_t
@@ -177,6 +189,9 @@ def get_samples(model, x_t, schedule, diffusion_config):
             curr_var.repeat(batch_size, 1),
             alpha.repeat(batch_size, 1),
         )
+        assert (
+            pred_noise.dtype == torch.float64
+        ), f"pred_noise should be float64, got {pred_noise.dtype}"
         upscale_coef = 1 / torch.sqrt(alpha)
         noise_coef = beta_cur / (torch.sqrt(1 - curr_var) + eps)
         x_new = upscale_coef * (x_cur - noise_coef * pred_noise)
@@ -269,7 +284,24 @@ def train_batch(
         signal_ratio.to(device),
         true_noise.to(device),
     )
+
+    # Assert that tensors are float64
+    assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
+    assert (
+        signal_var.dtype == torch.float64
+    ), f"signal_var should be float64, got {signal_var.dtype}"
+    assert (
+        signal_ratio.dtype == torch.float64
+    ), f"signal_ratio should be float64, got {signal_ratio.dtype}"
+    assert (
+        true_noise.dtype == torch.float64
+    ), f"true_noise should be float64, got {true_noise.dtype}"
+
     pred_noise = model(xt, signal_var, signal_ratio)
+    assert (
+        pred_noise.dtype == torch.float64
+    ), f"pred_noise should be float64, got {pred_noise.dtype}"
+
     prev_signal_var = signal_var / signal_ratio
     k = (1 - prev_signal_var) / (1 - signal_var)
     r = k ** (1 - S)
@@ -443,12 +475,25 @@ def animated_sample(
     """Sample from a trained model"""
     model, device = load_model(model_path=train_config["output_path"])
     generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
+
+    # Assert that tensors are float64
+    assert (
+        clean_data.dtype == torch.float64
+    ), f"clean_data should be float64, got {clean_data.dtype}"
+
     x0 = clean_data[:1].to(device)
+    assert x0.dtype == torch.float64, f"x0 should be float64, got {x0.dtype}"
+
     schedule = schedule.to(device)
     signal_var = schedule.signal_var[-1]
     xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(1 - signal_var)
+    assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
+
     with torch.no_grad():
         samples = get_samples(model, xt, schedule)
+        assert (
+            samples.dtype == torch.float64
+        ), f"samples should be float64, got {samples.dtype}"
         create_animation(samples, schedule, output_path, generator)
 
 
@@ -463,19 +508,35 @@ def evaluate(
     """Evaluate the model"""
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
+
+    # Assert that tensors are float64
+    assert (
+        clean_data.dtype == torch.float64
+    ), f"clean_data should be float64, got {clean_data.dtype}"
+
     schedule = schedule.to(device)
     signal_var = schedule.signal_var[-1]
     assert (
         signal_var.max().item() <= 0.011
     ), f"not noised enough: signal_var.max() = {signal_var.max().item()}"
     with torch.no_grad():
-        xt = torch.randn((n_samples, model_config["seq_len"]))
+        xt = torch.randn((n_samples, model_config["seq_len"]), dtype=torch.float64)
+        assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
+
         samples = get_samples(model, xt, schedule)
+        assert (
+            samples.dtype == torch.float64
+        ), f"samples should be float64, got {samples.dtype}"
+
         n_steps = samples.shape[1]
         q25, q50, q75 = 0, 0, 0
         for step in range(n_steps):
             selection = samples[:, step]
             losses = generator.loss(selection)
+            assert (
+                losses.dtype == torch.float64
+            ), f"losses should be float64, got {losses.dtype}"
+
             q25 = losses.quantile(0.25).item()
             q50 = losses.quantile(0.50).item()
             q75 = losses.quantile(0.75).item()
@@ -487,10 +548,138 @@ def evaluate(
         _run.log_scalar("q50", q50, epoch_number)
         _run.log_scalar("q75", q75, epoch_number)
 
+        # Save distribution of final samples
+        final_samples = samples[:, -1, :]  # [n_samples, seq_len]
+        final_losses = generator.loss(final_samples)
+
+        # Create figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}
+        )
+
+        # Main plot for all samples
+        for i in range(n_samples):
+            ax1.plot(
+                final_samples[i].cpu().numpy(), alpha=0.2, color="blue", linewidth=0.5
+            )
+
+        # Add statistics to the plot
+        mean_loss = final_losses.mean().item()
+        q50 = final_losses.quantile(0.50).item()
+
+        title = f"Distribution of {n_samples} Samples"
+        if epoch_number is not None:
+            title += f" (Epoch {epoch_number})"
+        title += f"\nMean Loss: {mean_loss:.3f}, Median: {q50:.3f}"
+
+        ax1.set_title(title)
+        ax1.set_xlabel("Position")
+        ax1.set_ylabel("Value")
+        ax1.grid(True, alpha=0.3)
+
+        # Create histogram of first element values
+        first_elements = final_samples[:, 0].cpu().numpy()
+        ax2.hist(first_elements, bins=20, alpha=0.7, color="blue")
+        ax2.set_xlim(0, 1)
+        ax2.set_title("Histogram of First Element Values")
+        ax2.set_xlabel("Value")
+        ax2.set_ylabel("Frequency")
+        ax2.grid(True, alpha=0.3)
+
+        # Adjust layout and save
+        plt.tight_layout()
+        plt.savefig("samples.png", dpi=300)
+        plt.close()
+
+        logger.info("Evaluation visualization saved to samples.png")
+
+        return final_samples, final_losses
+
+
+@ex.capture
+def sample_distribution(
+    _run,
+    model_path: str,
+    diffusion_config: dict,
+    train_config: dict,
+    model_config: dict,
+    n_samples: int = 1000,
+):
+    """Generate multiple samples and visualize their distribution.
+
+    This function:
+    1. Generates n_samples from the diffusion model
+    2. Plots all samples as line plots to visualize the distribution
+    3. Creates a histogram of the first element values across all samples
+    """
+    model, device = load_model(model_path=model_path)
+    generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
+
+    # Assert that tensors are float64
+    assert (
+        clean_data.dtype == torch.float64
+    ), f"clean_data should be float64, got {clean_data.dtype}"
+
+    schedule = schedule.to(device)
+
+    # Generate samples
+    with torch.no_grad():
+        xt = torch.randn((n_samples, model_config["seq_len"]), dtype=torch.float64)
+        assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
+
+        samples = get_samples(model, xt, schedule)
+        assert (
+            samples.dtype == torch.float64
+        ), f"samples should be float64, got {samples.dtype}"
+
+        # Get final samples (last step of denoising)
+        final_samples = samples[:, -1, :]  # [n_samples, seq_len]
+
+        # Calculate losses for each sample
+        losses = generator.loss(final_samples)
+
+        # Create figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}
+        )
+
+        # Main plot for all samples
+        for i in range(n_samples):
+            ax1.plot(
+                final_samples[i].cpu().numpy(), alpha=0.2, color="blue", linewidth=0.5
+            )
+
+        # Add statistics to the plot
+        mean_loss = losses.mean().item()
+        q50 = losses.quantile(0.50).item()
+
+        ax1.set_title(
+            f"Distribution of {n_samples} Samples\nMean Loss: {mean_loss:.3f}, Median: {q50:.3f}"
+        )
+        ax1.set_xlabel("Position")
+        ax1.set_ylabel("Value")
+        ax1.grid(True, alpha=0.3)
+
+        # Create histogram of first element values
+        first_elements = final_samples[:, 0].cpu().numpy()
+        ax2.hist(first_elements, bins=20, alpha=0.7, color="blue")
+        ax2.set_xlim(0, 1)
+        ax2.set_title("Histogram of First Element Values")
+        ax2.set_xlabel("Value")
+        ax2.set_ylabel("Frequency")
+        ax2.grid(True, alpha=0.3)
+
+        # Adjust layout and save
+        plt.tight_layout()
+        plt.savefig("samples.png", dpi=300)
+        plt.close()
+
+        logger.info("Sample distribution visualization saved to samples.png")
+        return final_samples, losses
+
 
 @ex.automain
 def main():
     train_denoiser()
-    # evaluate()
     # animated_sample()
-    # test_model()
+    # sample_distribution(model_path="models/69900e21-5e57-45d9-914c-93a299b79f93.pt")

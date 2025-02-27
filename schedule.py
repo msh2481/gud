@@ -11,6 +11,9 @@ from numpy import ndarray as ND
 from torch import nn, Tensor as TT
 from utils import set_seed
 
+# Set default tensor type to float64 (double precision)
+torch.set_default_dtype(torch.float64)
+
 
 def allclose(a: TT, val: float) -> bool:
     return torch.allclose(a, torch.ones_like(a) * val, atol=1e-6)
@@ -33,6 +36,20 @@ class Schedule:
         signal_var: Float[TT, "n_steps seq_len"],
         noise_var: Float[TT, "n_steps seq_len"],
     ):
+        # Assert that tensors are float64
+        assert (
+            signal_ratio.dtype == torch.float64
+        ), f"signal_ratio should be float64, got {signal_ratio.dtype}"
+        assert (
+            noise_level.dtype == torch.float64
+        ), f"noise_level should be float64, got {noise_level.dtype}"
+        assert (
+            signal_var.dtype == torch.float64
+        ), f"signal_var should be float64, got {signal_var.dtype}"
+        assert (
+            noise_var.dtype == torch.float64
+        ), f"noise_var should be float64, got {noise_var.dtype}"
+
         self.signal_ratio = signal_ratio
         self.noise_level = noise_level
         self.signal_var = signal_var
@@ -55,8 +72,32 @@ class Schedule:
         probs: Float[TT, "n_steps"] | None = None,
     ) -> tuple[Float[TT, "seq_len"], Float[TT, "seq_len"], Int[TT, ""]]:
         if probs is None:
-            # Uniform sampling
-            pos = torch.randint(1, self.signal_var.shape[0], (1,))[0]
+            # Use Sobol sequence for low-discrepancy sampling
+            n_steps = self.signal_var.shape[0]
+            n_precomputed = 2**13
+
+            # Initialize Sobol engine if not already created
+            if not hasattr(self, "_sobol_engine"):
+                # Use scramble=True for better randomization
+                self._sobol_engine = torch.quasirandom.SobolEngine(
+                    dimension=1,
+                    scramble=True,
+                )
+                self._sobol_idx = 0
+                # Pre-generate a larger sequence of points for better distribution
+                self._sobol_sequence = self._sobol_engine.draw(n_precomputed)
+
+            idx = self._sobol_idx % n_precomputed
+            sobol_sample = self._sobol_sequence[idx, 0]  # Value in [0, 1)
+            self._sobol_idx += 1
+            # Add a small random offset for better distribution while maintaining low discrepancy
+            # This helps break any patterns while still maintaining good coverage
+            sobol_sample = (sobol_sample + torch.rand(1).item() * 0.01) % 1.0
+
+            # Map from [0, 1) to [1, n_steps-1] with proper rounding
+            pos_float = 1 + sobol_sample * (n_steps - 1 - 1e-6)
+            pos_int = int(pos_float)
+            pos = torch.tensor(pos_int, dtype=torch.int64)
         else:
             # Importance sampling
             pos = (
@@ -110,6 +151,9 @@ class Schedule:
     def from_signal_ratio(
         cls, signal_ratio: Float[TT, "n_steps seq_len"]
     ) -> "Schedule":
+        assert (
+            signal_ratio.dtype == torch.float64
+        ), f"signal_ratio should be float64, got {signal_ratio.dtype}"
         signal_ratio = torch.cat(
             [torch.ones(1, signal_ratio.shape[1]) * VAR_0, signal_ratio], dim=0
         )
@@ -120,6 +164,9 @@ class Schedule:
 
     @classmethod
     def from_noise_level(cls, noise_level: Float[TT, "n_steps seq_len"]) -> "Schedule":
+        assert (
+            noise_level.dtype == torch.float64
+        ), f"noise_level should be float64, got {noise_level.dtype}"
         noise_level = torch.cat(
             [torch.ones(1, noise_level.shape[1]) * (1 - VAR_0), noise_level], dim=0
         )
@@ -130,6 +177,9 @@ class Schedule:
 
     @classmethod
     def from_signal_var(cls, signal_var: Float[TT, "n_steps seq_len"]) -> "Schedule":
+        assert (
+            signal_var.dtype == torch.float64
+        ), f"signal_var should be float64, got {signal_var.dtype}"
         signal_ratio = torch.ones_like(signal_var) * VAR_0
         signal_ratio[1:] = signal_var[1:] / signal_var[:-1]
         noise_level = 1 - signal_ratio
@@ -172,7 +222,10 @@ class Schedule:
 
         # Binary search to find optimal noise scale
         def get_final_signal_var(scale: float) -> float:
-            betas = scale * torch.linspace(1, 10, denoise_steps).float()
+            betas = scale * torch.linspace(1, 10, denoise_steps).double()
+            assert (
+                betas.dtype == torch.float64
+            ), f"betas should be float64, got {betas.dtype}"
             if betas.max() >= 1:
                 return 0.0
             return torch.prod(1 - betas).item()
@@ -187,7 +240,14 @@ class Schedule:
 
         # Create noise schedule
         noise_levels = torch.zeros((n_steps, seq_len))
-        betas = ((lef + rig) / 2) * torch.linspace(1, 10, denoise_steps).float()
+        assert (
+            noise_levels.dtype == torch.float64
+        ), f"noise_levels should be float64, got {noise_levels.dtype}"
+
+        betas = ((lef + rig) / 2) * torch.linspace(1, 10, denoise_steps).double()
+        assert (
+            betas.dtype == torch.float64
+        ), f"betas should be float64, got {betas.dtype}"
         # logger.info(f"betas: {betas}")
 
         # Apply rolling noise pattern
