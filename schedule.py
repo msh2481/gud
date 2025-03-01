@@ -1,4 +1,5 @@
 from math import ceil
+from typing import Callable, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -11,7 +12,6 @@ from numpy import ndarray as ND
 from torch import nn, Tensor as TT
 from utils import set_seed
 
-# Set default tensor type to float64 (double precision)
 torch.set_default_dtype(torch.float64)
 
 
@@ -19,321 +19,111 @@ def allclose(a: TT, val: float) -> bool:
     return torch.allclose(a, torch.ones_like(a) * val, atol=1e-6)
 
 
-VAR_0 = 1 - 1e-4
-
-
 class Schedule:
-    signal_ratio: Float[TT, "n_steps seq_len"]  # aka alpha
-    noise_level: Float[TT, "n_steps seq_len"]  # aka beta
-    signal_var: Float[TT, "n_steps seq_len"]  # aka prod(alpha)
-    noise_var: Float[TT, "n_steps seq_len"]  # aka 1 - signal_var
+    """
+    Continuous time schedule parametrized by log-SNR.
+
+    This class represents a schedule as a function of continuous time t in [0, 1],
+    rather than as discrete steps. It provides methods to compute:
+    - log_snr(t): log of signal-to-noise ratio at time t
+    - signal_var(t): signal variance at time t, computed as sigmoid(log_snr(t))
+    - dlogsnr_dt(t): derivative of log_snr with respect to t
+    """
 
     @typed
     def __init__(
         self,
-        signal_ratio: Float[TT, "n_steps seq_len"],
-        noise_level: Float[TT, "n_steps seq_len"],
-        signal_var: Float[TT, "n_steps seq_len"],
-        noise_var: Float[TT, "n_steps seq_len"],
-    ):
-        # Assert that tensors are float64
-        assert (
-            signal_ratio.dtype == torch.float64
-        ), f"signal_ratio should be float64, got {signal_ratio.dtype}"
-        assert (
-            noise_level.dtype == torch.float64
-        ), f"noise_level should be float64, got {noise_level.dtype}"
-        assert (
-            signal_var.dtype == torch.float64
-        ), f"signal_var should be float64, got {signal_var.dtype}"
-        assert (
-            noise_var.dtype == torch.float64
-        ), f"noise_var should be float64, got {noise_var.dtype}"
-
-        self.signal_ratio = signal_ratio
-        self.noise_level = noise_level
-        self.signal_var = signal_var
-        self.noise_var = noise_var
-
-        self.assert_invariants()
-
-    @typed
-    def to(self, device: torch.device | str) -> "Schedule":
-        return Schedule(
-            self.signal_ratio.to(device),
-            self.noise_level.to(device),
-            self.signal_var.to(device),
-            self.noise_var.to(device),
-        )
-
-    @typed
-    def sample_signal_var(
-        self,
-        probs: Float[TT, "n_steps"] | None = None,
-    ) -> tuple[Float[TT, "seq_len"], Float[TT, "seq_len"], Int[TT, ""]]:
-        if probs is None:
-            # Use Sobol sequence for low-discrepancy sampling
-            n_steps = self.signal_var.shape[0]
-            n_precomputed = 2**13
-
-            # Initialize Sobol engine if not already created
-            if not hasattr(self, "_sobol_engine"):
-                # Use scramble=True for better randomization
-                self._sobol_engine = torch.quasirandom.SobolEngine(
-                    dimension=1,
-                    scramble=True,
-                )
-                self._sobol_idx = 0
-                # Pre-generate a larger sequence of points for better distribution
-                self._sobol_sequence = self._sobol_engine.draw(n_precomputed)
-
-            idx = self._sobol_idx % n_precomputed
-            sobol_sample = self._sobol_sequence[idx, 0]  # Value in [0, 1)
-            self._sobol_idx += 1
-            # Add a small random offset for better distribution while maintaining low discrepancy
-            # This helps break any patterns while still maintaining good coverage
-            sobol_sample = (sobol_sample + torch.rand(1).item() * 0.01) % 1.0
-
-            # Map from [0, 1) to [1, n_steps-1] with proper rounding
-            pos_float = 1 + sobol_sample * (n_steps - 1 - 1e-6)
-            pos_int = int(pos_float)
-            pos = torch.tensor(pos_int, dtype=torch.int64)
-        else:
-            # Importance sampling
-            pos = (
-                torch.multinomial(probs[1:], 1)[0] + 1
-            )  # Skip first timestep (clean data)
-        return self.signal_var[pos], self.signal_ratio[pos], pos
-
-    @typed
-    def assert_invariants(self):
-        # Shape
-        assert (
-            self.signal_ratio.shape
-            == self.noise_level.shape
-            == self.signal_var.shape
-            == self.noise_var.shape
-        ), "All shapes must match"
-        # NaNs
-        assert (
-            torch.isnan(self.signal_ratio).sum() == 0
-        ), "signal_ratio must not contain NaNs"
-        assert (
-            torch.isnan(self.noise_level).sum() == 0
-        ), "noise_level must not contain NaNs"
-        assert (
-            torch.isnan(self.signal_var).sum() == 0
-        ), "signal_var must not contain NaNs"
-        assert torch.isnan(self.noise_var).sum() == 0, "noise_var must not contain NaNs"
-        # Non-negativity
-        assert (self.signal_ratio >= 0).all(), "signal_ratio must be non-negative"
-        assert (self.noise_level >= 0).all(), "noise_level must be non-negative"
-        assert (self.signal_var >= 0).all(), "signal_var must be non-negative"
-        assert (self.noise_var >= 0).all(), "noise_var must be non-negative"
-        # Sum to 1
-        assert allclose(
-            self.signal_ratio + self.noise_level, 1
-        ), "signal_ratio + noise_level must be 1"
-        assert allclose(
-            self.signal_var + self.noise_var, 1
-        ), "signal_var + noise_var must be 1"
-        # x[0] is not noised
-        assert allclose(self.signal_var[0, :], VAR_0), "x[0] must be signal"
-        assert allclose(self.signal_ratio[0, :], VAR_0), "x[0] must be not ratioed"
-        # signal_var is prod(signal_ratio)
-        for i in range(1, self.signal_ratio.shape[0]):
-            assert allclose(
-                self.signal_var[i, :],
-                self.signal_var[i - 1, :] * self.signal_ratio[i, :],
-            ), "signal_var must be prod(signal_ratio)"
-
-    @classmethod
-    def from_signal_ratio(
-        cls, signal_ratio: Float[TT, "n_steps seq_len"]
-    ) -> "Schedule":
-        assert (
-            signal_ratio.dtype == torch.float64
-        ), f"signal_ratio should be float64, got {signal_ratio.dtype}"
-        signal_ratio = torch.cat(
-            [torch.ones(1, signal_ratio.shape[1]) * VAR_0, signal_ratio], dim=0
-        )
-        noise_level = 1 - signal_ratio
-        signal_var = torch.cumprod(signal_ratio, dim=0)
-        noise_var = 1 - signal_var
-        return cls(signal_ratio, noise_level, signal_var, noise_var)
-
-    @classmethod
-    def from_noise_level(cls, noise_level: Float[TT, "n_steps seq_len"]) -> "Schedule":
-        assert (
-            noise_level.dtype == torch.float64
-        ), f"noise_level should be float64, got {noise_level.dtype}"
-        noise_level = torch.cat(
-            [torch.ones(1, noise_level.shape[1]) * (1 - VAR_0), noise_level], dim=0
-        )
-        signal_ratio = 1 - noise_level
-        signal_var = torch.cumprod(signal_ratio, dim=0)
-        noise_var = 1 - signal_var
-        return cls(signal_ratio, noise_level, signal_var, noise_var)
-
-    @classmethod
-    def from_signal_var(cls, signal_var: Float[TT, "n_steps seq_len"]) -> "Schedule":
-        assert (
-            signal_var.dtype == torch.float64
-        ), f"signal_var should be float64, got {signal_var.dtype}"
-        signal_ratio = torch.ones_like(signal_var) * VAR_0
-        signal_ratio[1:] = signal_var[1:] / signal_var[:-1]
-        noise_level = 1 - signal_ratio
-        noise_var = 1 - signal_var
-        return cls(signal_ratio, noise_level, signal_var, noise_var)
-
-    @classmethod
-    def make_rolling(
-        cls,
-        seq_len: int,
         *,
-        n_steps: int | None = None,
-        speed: float | None = None,
-        denoise_steps: int | None = None,
-        window: float | None = None,
-        start_from: int = 0,
-        final_signal_var: float = 1e-2,
-    ) -> "Schedule":
-        """Create a rolling schedule for denoising.
+        N: int,
+        w: Float[TT, ""],
+        alpha_0: float = 1 - 1e-4,
+        alpha_1: float = 1e-2,
+    ):
+        self.N = N
+        self.w = w
+        to_snr = lambda x: torch.tensor(x / (1 - x), dtype=torch.float64)
+        self.snr_0 = to_snr(alpha_0)
+        self.snr_1 = to_snr(alpha_1)
+        print(self.snr_0, self.snr_1)
 
-        Two ways to specify the schedule:
-        1. n_steps + window
-        2. speed + denoise_steps
+    @typed
+    def raw_progress(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+        time_per_token = self.w / (self.N - 1 + self.w)
+        v = (self.N - 1) / (1 - time_per_token)
+        l = torch.arange(self.N, dtype=torch.float64) / v
+        r = l + time_per_token
+        return (times[:, None] - l) / (r - l)
+
+    @typed
+    def snr(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+        progress = self.raw_progress(times).clamp(0, 1)
+        return self.snr_0 + progress * (self.snr_1 - self.snr_0)
+
+    @typed
+    def log_snr(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+        return torch.log(self.snr(times))
+
+    @typed
+    def dsnr_dt(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+        progress = self.raw_progress(times)
+        is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
+        return (
+            is_denoising
+            # * self.snr(times)
+            * (self.snr_1 - self.snr_0)
+            * (self.N - 1 + self.w)
+            / self.w
+        ).abs()
+
+    @typed
+    def signal_var(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+        snr = self.snr(times)
+        return snr / (snr + 1)
+
+    @typed
+    def sample_time(self) -> Float[TT, ""]:
         """
-        # Compute speed and denoise_steps based on input parameters
-        if window is not None and n_steps is not None:
-            speed = (seq_len + window - 1) / n_steps
-            denoise_steps = max(1, int(window / speed + 0.5))
-            # n_steps = int(ceil((seq_len - 1 - start_from) / speed)) + denoise_steps
-        elif speed is not None and denoise_steps is not None and n_steps is None:
-            # 0 step: first step denoising start_from
-            # k step: first step denoising seq_len - 1
-            # k + denoise_steps - 1 step: last step denoising seq_len - 1
-            # k = (seq_len - 1 - start_from) / speed
-            n_steps = int(ceil((seq_len - 1 - start_from) / speed)) + denoise_steps
-        else:
-            raise ValueError(
-                "Must provide one of: (n_steps + window), (speed + denoise_steps), or (n_steps + denoise_steps)"
+        Sample a random time point in [0, 1] using a precomputed low-discrepancy sequence.
+
+        Returns:
+            A time point in [0, 1]
+        """
+        if not hasattr(self, "_precomputed"):
+            sequence_length = 2**13
+            sobol_engine = torch.quasirandom.SobolEngine(
+                dimension=1,
+                scramble=True,
             )
-
-        # Binary search to find optimal noise scale
-        def get_final_signal_var(scale: float) -> float:
-            betas = scale * torch.linspace(1, 10, denoise_steps).double()
-            assert (
-                betas.dtype == torch.float64
-            ), f"betas should be float64, got {betas.dtype}"
-            if betas.max() >= 1:
-                return 0.0
-            return torch.prod(1 - betas).item()
-
-        lef, rig = 0, 1
-        while rig - lef > 1e-9:
-            mid = (lef + rig) / 2
-            if get_final_signal_var(mid) > final_signal_var:
-                lef = mid
-            else:
-                rig = mid
-
-        # Create noise schedule
-        noise_levels = torch.zeros((n_steps, seq_len))
-        assert (
-            noise_levels.dtype == torch.float64
-        ), f"noise_levels should be float64, got {noise_levels.dtype}"
-
-        betas = ((lef + rig) / 2) * torch.linspace(1, 10, denoise_steps).double()
-        assert (
-            betas.dtype == torch.float64
-        ), f"betas should be float64, got {betas.dtype}"
-        # logger.info(f"betas: {betas}")
-
-        # Apply rolling noise pattern
-        for pos in range(start_from, seq_len):
-            start_time = min(
-                max(0, int(0.5 + (seq_len - 1 - pos) / speed)), n_steps - denoise_steps
-            )
-            end_time = start_time + denoise_steps
-            noise_levels[start_time:end_time, pos] = betas[: end_time - start_time]
-
-        return cls.from_noise_level(noise_levels)
+            self._precomputed = sobol_engine.draw(sequence_length).squeeze()
+            # Add small random offsets to break patterns
+            offsets = torch.rand(sequence_length) * 0.01
+            self._precomputed = (self._precomputed + offsets) % 1.0
+            self._sequence_idx = 0
+        sample = self._precomputed[self._sequence_idx].item()
+        self._sequence_idx = (self._sequence_idx + 1) % len(self._precomputed)
+        return torch.tensor(sample, dtype=torch.float64)
 
 
-@typed
-def test_schedule():
-    signal_ratio = torch.randn(3, 5).sigmoid()
-    schedule = Schedule.from_noise_level(signal_ratio)
-    print("Signal ratio:")
-    print(schedule.signal_ratio)
-    print("Noise level:")
-    print(schedule.noise_level)
-    print("Signal var:")
-    print(schedule.signal_var)
-    print("Noise var:")
-    print(schedule.noise_var)
-
-    for _ in range(10):
-        print(schedule.sample_signal_var())
-
-
-@typed
-def visualize_schedule(schedule: Schedule) -> None:
-    """Shows all four matrices in a 2x2 grid"""
-    fig, axs = plt.subplots(2, 2)
-    cmap = plt.cm.gray
-    plt.subplot(2, 2, 1)
-    plt.title("Signal ratio")
-    plt.imshow(schedule.signal_ratio, cmap=cmap)
-    plt.colorbar()
-    plt.subplot(2, 2, 2)
-    plt.title("Noise level")
-    plt.imshow(schedule.noise_level, cmap=cmap)
-    plt.colorbar()
-    plt.subplot(2, 2, 3)
-    plt.title("Signal var (log10)")
-    plt.imshow(torch.log10(schedule.signal_var), cmap=cmap)
-    plt.colorbar()
-    plt.subplot(2, 2, 4)
-    plt.title("Noise var (log10)")
-    plt.imshow(torch.log10(schedule.noise_var), cmap=cmap)
-    plt.colorbar()
-    plt.tight_layout()
-    plt.savefig("schedule.png")
-    plt.close()
-    plt.cla()
-    plt.clf()
-
-
-def test_elbo():
-    def elbo(n: int) -> float:
-        schedule = Schedule.make_rolling(
-            seq_len=20,
-            speed=1e3,
-            denoise_steps=n,
-            final_signal_var=0.01,
-            start_from=0,
-        )
-        pos = 0
-        alpha = schedule.signal_ratio[:, pos]
-        beta = schedule.noise_level[:, pos]
-        pi = schedule.signal_var[:, pos]
-        w = beta[1:] / (alpha[1:] * (1 - pi[1:]))
-        return w.sum().item()
-
-    for n in range(1, 100):
-        print(n, elbo(n))
+def test_dsnr_dt():
+    # Numerically compare dsnr_dt(t) with finite-differences
+    w = torch.tensor(1.0, dtype=torch.float64)
+    schedule = Schedule(N=4, w=w)
+    points = 7
+    times = (torch.linspace(0, 1, points) + torch.rand(points) * 1e-6).clamp(
+        0.0001, 0.9999
+    )
+    dsnr_dt = schedule.dsnr_dt(times)
+    eps = 1e-9
+    snr_minus = schedule.snr(times - eps)
+    snr_plus = schedule.snr(times + eps)
+    dsnr_dt_fd = -((snr_plus - snr_minus) / (2 * eps))
+    print(dsnr_dt)
+    print(dsnr_dt_fd)
+    for i in range(len(dsnr_dt)):
+        assert torch.allclose(
+            dsnr_dt[i], dsnr_dt_fd[i], rtol=1e-4
+        ), f"dsnr_dt[{i}] = {dsnr_dt[i]}, dsnr_dt_fd[{i}] = {dsnr_dt_fd[i]}"
 
 
 if __name__ == "__main__":
-    test_elbo()
-    exit(0)
-    schedule = Schedule.make_rolling(
-        seq_len=10,
-        speed=0.5,
-        denoise_steps=1,
-        final_signal_var=0.01,
-        start_from=3,
-    )
-    visualize_schedule(schedule)
+    test_dsnr_dt()

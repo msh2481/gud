@@ -19,7 +19,6 @@ from schedule import Schedule, visualize_schedule
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 
-# Set default tensor type to float64 (double precision)
 torch.set_default_dtype(torch.float64)
 
 # Initialize Sacred experiment
