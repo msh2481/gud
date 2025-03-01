@@ -27,9 +27,6 @@ ex.observers.append(MongoObserver(db_name="sacred"))
 
 EPS = 1e-8
 
-# S = 0 means sigma_t = beta_t, S = 1 means sigma_t = (1 - pi_{t-1}) / (1 - pi_t) beta_t and no variance term is needed
-S = 0.0
-
 
 @ex.config
 def config():
@@ -42,7 +39,6 @@ def config():
         "n_heads": 16,
         "n_layers": 4,
         "dropout": 0.0,
-        "predict_x0": False,
         "use_causal_mask": False,
     }
 
@@ -60,8 +56,7 @@ def config():
     # Diffusion configuration
     diffusion_config = {
         "window": 1,
-        "n_steps": 400,
-        "n_steps_eval": 400,
+        "sampling_steps": 400,
         "start_from": 0,
     }
 
@@ -82,11 +77,9 @@ class Denoiser(nn.Module):
         n_heads: int = 8,
         n_layers: int = 4,
         dropout: float = 0.1,
-        predict_x0: bool = True,
         use_causal_mask: bool = False,
     ):
         super().__init__()
-        self.predict_x0 = predict_x0
         self.use_causal_mask = use_causal_mask
         self.pos_encoding = nn.Parameter(torch.zeros(1, seq_len, d_model))
         self.input_proj = nn.Linear(3, d_model)
@@ -128,7 +121,6 @@ class Denoiser(nn.Module):
         self,
         noisy_seq: Float[TT, "batch seq_len"],
         signal_var: Float[TT, "batch seq_len"],
-        signal_ratio: Float[TT, "batch seq_len"],
     ) -> Float[TT, "batch seq_len"]:
         x = torch.stack(
             [noisy_seq, torch.sqrt(signal_var), torch.sqrt(1 - signal_var)], dim=-1
@@ -141,25 +133,18 @@ class Denoiser(nn.Module):
             x = self.transformer(x)  # [batch, seq_len, d_model]
         x = self.output_proj(x)  # [batch, seq_len, 1]
         x = x.squeeze(-1)  # [batch, seq_len]
-
-        if self.predict_x0:
-            eps = (noisy_seq - torch.sqrt(signal_var) * x) / torch.sqrt(
-                1 - signal_var + EPS
-            )
-            return eps
-        else:
-            return x
+        return x
 
 
 @ex.capture
-def get_samples(model, x_t, schedule, diffusion_config):
+def get_samples(model, x_1, schedule, diffusion_config):
     """Sample from the diffusion model following the schedule."""
-    device = x_t.device
-    n_steps = len(schedule.signal_var)
-    batch_size, seq_len = x_t.shape
+    device = x_1.device
+    n_steps = diffusion_config["sampling_steps"]
+    batch_size, seq_len = x_1.shape
 
     # Assert that tensors are float64
-    assert x_t.dtype == torch.float64, f"x_t should be float64, got {x_t.dtype}"
+    assert x_1.dtype == torch.float64, f"x_t should be float64, got {x_1.dtype}"
     assert (
         schedule.signal_var.dtype == torch.float64
     ), f"schedule.signal_var should be float64, got {schedule.signal_var.dtype}"
@@ -169,7 +154,7 @@ def get_samples(model, x_t, schedule, diffusion_config):
 
     # Store all intermediate steps [batch, n_steps, seq_len]
     xs = torch.zeros(batch_size, n_steps, seq_len, device=device)
-    xs[:, -1] = x_t
+    xs[:, -1] = x_1
     eps = EPS
 
     for it in reversed(range(n_steps - 1)):

@@ -32,13 +32,25 @@ q(x(p) \mid x(t), x(0)) &= \mathcal{N}(\hat{\mu}, \hat{\sigma}^2), \quad \text{w
  KL(q \parallel p) &= \frac{1}{2} \frac{\Delta \hat{\mu}^2}{\hat{\sigma}^2} = \frac{1}{2} \frac{\beta(p, t) \alpha(p)}{\beta(p) \beta(t)} \cdot \Delta \hat{x}(0)^2 = \\
  &= \frac{1}{2}(s(p) - s(t)) \cdot \Delta \hat{x}(0)^2 \\
  &= \frac{1}{2}\frac{s(p) - s(t)}{s(t)} \cdot \Delta \hat{\varepsilon}^2 \\
+ &\approx \frac{1}{2}(\log s(p) - \log s(t)) \cdot \Delta \hat{\varepsilon}^2 \\
 \end{split}
 $$
 
 So the continuous ELBO is:
 $$ 
-\mathcal{L} = \frac{1}{2} \int_0^1 \left(\text{MSE in $x(0)$ space}\right) d s(t)
+\begin{split}
+\mathcal{L} &= \frac{1}{2} \int_0^1 \left(\text{MSE in $x(0)$ space}\right) s'(t) d t \\
+&= \frac{1}{2} \int_0^1 \left(\text{MSE in $\varepsilon$ space}\right) (\log s(t))' d t \\
+&= \frac{1}{2} \int_0^1 \frac{\left(\text{MSE in $\varepsilon$ space}\right)}{s(t)} s'(t) d t \\
+\end{split}
 $$
+
+
+For $L \leq s(t) \leq R$ region (with $L, R \gg 1$) we can upper bound the loss by $\mathcal{O}(\log \frac{R}{L})$ by predicting $\varepsilon = 0$.
+
+For $0 \leq s(t) \leq r$ region (with $r \ll 1$) we can upper bound the loss by $\mathcal{O}(r)$ by predicting $x(0) = 0$.
+
+Such baseline also means that it makes sense to sample SNR logarithmically for large values and linearly for small.
 
 ## Noise schedule
 

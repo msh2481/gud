@@ -37,13 +37,20 @@ class Schedule:
         N: int,
         w: Float[TT, ""],
         alpha_0: float = 1 - 1e-4,
-        alpha_1: float = 1e-2,
+        alpha_1: float = 1e-4,
     ):
         self.N = N
         self.w = w
         to_snr = lambda x: torch.tensor(x / (1 - x), dtype=torch.float64)
         self.snr_0 = to_snr(alpha_0)
+        self.snr_mid = torch.tensor(1.0, dtype=torch.float64)
         self.snr_1 = to_snr(alpha_1)
+        assert (
+            self.snr_0 > self.snr_mid
+        ), f"snr_0 = {self.snr_0} must be greater than snr_mid = {self.snr_mid}"
+        assert (
+            self.snr_1 < self.snr_mid
+        ), f"snr_1 = {self.snr_1} must be less than snr_mid = {self.snr_mid}"
         print(self.snr_0, self.snr_1)
 
     @typed
@@ -57,7 +64,11 @@ class Schedule:
     @typed
     def snr(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
         progress = self.raw_progress(times).clamp(0, 1)
-        return self.snr_0 + progress * (self.snr_1 - self.snr_0)
+        exponential = (
+            self.snr_0.log() + progress * (self.snr_mid.log() - self.snr_0.log())
+        ).exp()
+        linear = self.snr_mid + (progress - 0.5) * (self.snr_1 - self.snr_mid)
+        return torch.where(progress < 0.5, exponential, linear)
 
     @typed
     def log_snr(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
@@ -67,13 +78,10 @@ class Schedule:
     def dsnr_dt(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
         progress = self.raw_progress(times)
         is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
-        return (
-            is_denoising
-            # * self.snr(times)
-            * (self.snr_1 - self.snr_0)
-            * (self.N - 1 + self.w)
-            / self.w
-        ).abs()
+        common = is_denoising * (self.N - 1 + self.w) / self.w
+        exponential = self.snr(times) * (self.snr_mid.log() - self.snr_0.log())
+        linear = self.snr_1 - self.snr_mid
+        return (common * torch.where(progress < 0.5, exponential, linear)).abs()
 
     @typed
     def signal_var(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
@@ -107,8 +115,8 @@ class Schedule:
 def test_dsnr_dt():
     # Numerically compare dsnr_dt(t) with finite-differences
     w = torch.tensor(1.0, dtype=torch.float64)
-    schedule = Schedule(N=4, w=w)
-    points = 7
+    schedule = Schedule(N=2, w=w)
+    points = 17
     times = (torch.linspace(0, 1, points) + torch.rand(points) * 1e-6).clamp(
         0.0001, 0.9999
     )
