@@ -51,7 +51,6 @@ class Schedule:
         assert (
             self.snr_1 < self.snr_mid
         ), f"snr_1 = {self.snr_1} must be less than snr_mid = {self.snr_mid}"
-        print(self.snr_0, self.snr_1)
 
     @typed
     def raw_progress(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
@@ -65,9 +64,9 @@ class Schedule:
     def snr(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
         progress = self.raw_progress(times).clamp(0, 1)
         exponential = (
-            self.snr_0.log() + progress * (self.snr_mid.log() - self.snr_0.log())
+            self.snr_0.log() + 2 * progress * (self.snr_mid.log() - self.snr_0.log())
         ).exp()
-        linear = self.snr_mid + (progress - 0.5) * (self.snr_1 - self.snr_mid)
+        linear = self.snr_mid + 2 * (progress - 0.5) * (self.snr_1 - self.snr_mid)
         return torch.where(progress < 0.5, exponential, linear)
 
     @typed
@@ -78,7 +77,7 @@ class Schedule:
     def dsnr_dt(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
         progress = self.raw_progress(times)
         is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
-        common = is_denoising * (self.N - 1 + self.w) / self.w
+        common = is_denoising * 2 * (self.N - 1 + self.w) / self.w
         exponential = self.snr(times) * (self.snr_mid.log() - self.snr_0.log())
         linear = self.snr_1 - self.snr_mid
         return (common * torch.where(progress < 0.5, exponential, linear)).abs()
@@ -110,6 +109,78 @@ class Schedule:
         sample = self._precomputed[self._sequence_idx].item()
         self._sequence_idx = (self._sequence_idx + 1) % len(self._precomputed)
         return torch.tensor(sample, dtype=torch.float64)
+
+
+@typed
+def visualize_schedule(schedule: Schedule, num_points: int = 1000):
+    """
+    Visualize a schedule by plotting signal variance and SNR over time.
+
+    Args:
+        schedule: The Schedule instance to visualize
+        num_points: Number of time points to sample (default: 100)
+
+    Saves the visualization to 'schedule.png'
+    """
+    times = torch.linspace(0, 1, num_points, dtype=torch.float64)
+
+    # Calculate signal variance and SNR for each time point
+    signal_var = schedule.signal_var(times)
+    snr = schedule.snr(times)
+
+    # Create a figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+
+    # Plot signal variance
+    im1 = ax1.imshow(
+        signal_var.T.cpu().numpy(),
+        aspect="auto",
+        interpolation="nearest",
+        origin="lower",
+        extent=[0, 1, 0, schedule.N],
+        vmin=0,
+        vmax=1,
+        cmap="viridis",
+    )
+    ax1.set_title("Signal Variance Over Time")
+    ax1.set_xlabel("Time (t)")
+    ax1.set_ylabel("Position")
+    fig.colorbar(im1, ax=ax1, label="Signal Variance")
+
+    # Plot SNR (log scale)
+    log_snr = torch.log10(snr)
+    vmin = max(-2, log_snr.min().item())
+    vmax = min(4, log_snr.max().item())
+
+    im2 = ax2.imshow(
+        log_snr.T.cpu().numpy(),
+        aspect="auto",
+        interpolation="nearest",
+        origin="lower",
+        extent=[0, 1, 0, schedule.N],
+        vmin=vmin,
+        vmax=vmax,
+        cmap="plasma",
+    )
+    ax2.set_title("Log10 SNR Over Time")
+    ax2.set_xlabel("Time (t)")
+    ax2.set_ylabel("Position")
+    fig.colorbar(im2, ax=ax2, label="Log10 SNR")
+
+    # Add schedule parameters as text
+    plt.figtext(
+        0.5,
+        0.01,
+        f"N={schedule.N}, w={schedule.w.item():.1f}, "
+        f"SNR range: [{schedule.snr_1.item():.2f}, {schedule.snr_0.item():.2f}]",
+        ha="center",
+        fontsize=12,
+        bbox=dict(facecolor="white", alpha=0.8),
+    )
+
+    plt.tight_layout()
+    plt.savefig("schedule.png", dpi=150)
+    plt.close()
 
 
 def test_dsnr_dt():
