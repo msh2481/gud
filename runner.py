@@ -97,7 +97,7 @@ def get_config(
             "seq_len": len(permutation),
         },
         "generator_config": {
-            "generator_class": "Zero",  # "LogisticMapPermutation",
+            "generator_class": "LogisticMapPermutation",
             "length": len(permutation),
             "permutation": permutation,
         },
@@ -136,7 +136,7 @@ def run(
 
 
 name = "test"  # "cont-1"
-run(kind="UD", direction="swaps", step=1, window=2, comment=f"{name}")
+run(kind="UD", direction="swaps", step=1, window=1, comment=f"{name}")
 
 # for rep in range(10):
 #     for step in [1, 2, 4, 8, 12]:

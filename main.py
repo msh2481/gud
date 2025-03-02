@@ -162,7 +162,7 @@ class Denoiser(nn.Module):
             sigma_posterior=sigma_likelihood,
         )
 
-        return mu_likelihood
+        return mu
 
 
 @typed
@@ -290,8 +290,8 @@ def train_batch(
     )
     x0_hat = model(xt, signal_var)
     x0_errors = (x0_hat - x0).square()
-    # losses = (dsnr_dt * x0_errors).sum(dim=-1)
-    losses = x0_errors.sum(dim=-1)
+    losses = (dsnr_dt * x0_errors).sum(dim=-1)
+    # losses = x0_errors.sum(dim=-1)
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
     loss = losses.mean()
 

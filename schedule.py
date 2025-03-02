@@ -43,8 +43,8 @@ class Schedule:
         self.w = w
         to_snr = lambda x: torch.tensor(x / (1 - x), dtype=torch.float64)
         self.snr_0 = to_snr(alpha_0)
-        self.snr_mid = torch.tensor(1.0, dtype=torch.float64)
         self.snr_1 = to_snr(alpha_1)
+        self.snr_mid = torch.tensor(1.0, dtype=torch.float64)
         assert (
             self.snr_0 > self.snr_mid
         ), f"snr_0 = {self.snr_0} must be greater than snr_mid = {self.snr_mid}"
