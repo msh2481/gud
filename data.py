@@ -312,34 +312,42 @@ class OneMinusX(DataGenerator):
         return torch.rand((batch_size, self.init_params["length"]))
 
     @typed
-    def losses_per_clause(self, x: TT) -> TT:
-        clauses = self.init_params["clauses"]
-        results = torch.zeros(x.shape[0], len(clauses))
-        for i, (sources, target) in enumerate(clauses):
-            mean = x[:, sources].mean(dim=-1)
-            prediction = 1 - mean
-            results[:, i] = (prediction - x[:, target]).square()
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
+        length = self.init_params["length"]
+        permutation = self.init_params["permutation"]
+        assert (
+            len(permutation) == length
+        ), "Permutation length must match sequence length"
+        assert sorted(permutation) == list(range(length)), "Invalid permutation"
+
+        results = torch.zeros(x.shape[0], length - 1)
+        for i in range(1, length):
+            curr_idx = permutation[i]
+            prev_idx = permutation[i - 1]
+            prediction = 1 - x[:, prev_idx]
+            results[:, i - 1] = (prediction - x[:, curr_idx]).square()
         return results
 
-    @classmethod
     @typed
-    def linear(cls, n: int) -> list[tuple[list[int], int]]:
-        clauses = []
-        for i in range(1, n):
-            clauses.append(([i - 1], i))
-        return clauses
+    def sample(
+        self, batch_size: int, debug: bool = False
+    ) -> Float[TT, "batch seq_len"]:
+        length = self.init_params["length"]
+        permutation = self.init_params["permutation"]
+        result = torch.zeros((batch_size, length))
 
-    @classmethod
-    @typed
-    def complicated(cls, n: int) -> list[tuple[list[int], int]]:
-        assert n >= 9, "n must be at least 9"
-        clauses = [
-            ([0, 1], n - 3),
-            ([2, 3], n - 2),
-            ([4, 5], n - 1),
-            ([n - 3, n - 2], n - 1),
-        ]
-        return clauses
+        first_pos = permutation[0]
+        result[:, first_pos] = torch.rand(batch_size)
+
+        for i in range(1, length):
+            curr_idx = permutation[i]
+            prev_idx = permutation[i - 1]
+            result[:, curr_idx] = 1 - result[:, prev_idx]
+
+        self.data = torch.cat([self.data, result], dim=0)
+        return result
 
 
 class DiffusionDataset(Dataset):

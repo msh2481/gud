@@ -14,7 +14,6 @@ def get_config(
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
     window: float | int | None = None,
-    n_steps: int | None = None,
     sampling_steps: int | None = None,
 ):
     if direction == "forward":
@@ -74,8 +73,6 @@ def get_config(
             j = i + step - 1
             permutation[i], permutation[j] = permutation[j], permutation[i]
 
-    if n_steps is None:
-        raise ValueError("n_steps must be provided")
     if kind == "AR":
         window = 1
     elif kind == "D":
@@ -96,7 +93,7 @@ def get_config(
             "seq_len": len(permutation),
         },
         "generator_config": {
-            "generator_class": "LogisticMapPermutation",
+            "generator_class": "OneMinusX",  # "LogisticMapPermutation",
             "length": len(permutation),
             "permutation": permutation,
         },
@@ -110,26 +107,23 @@ def run(
     direction: Literal["forward", "backward", "shuffled", "slightly_shuffled", "swaps"],
     step: int | None = None,
     window: float | int | None = None,
-    n_steps: int | None = None,
     n_steps_eval: int | None = None,
     comment: str = "",
 ):
-    if n_steps is None:
-        n_steps = 400
-        n_steps_eval = 400
+    if n_steps_eval is None:
+        n_steps_eval = 100
 
     config_updates = get_config(
         kind=kind,
         direction=direction,
         step=step,
         window=window,
-        n_steps=n_steps,
         sampling_steps=n_steps_eval,
     )
     ex.run(
         config_updates=config_updates,
         meta_info={
-            "comment": f"k={kind} d={direction} w={window} T={n_steps} step={step} | {comment}"
+            "comment": f"k={kind} d={direction} w={window} step={step} | {comment}"
         },
     )
 

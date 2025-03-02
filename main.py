@@ -116,7 +116,7 @@ class Denoiser(nn.Module):
             enable_nested_tensor=False,
         )
         # Modified to output both mu and log_sigma
-        self.output_proj = nn.Linear(d_model, 2)
+        self.output_proj = nn.Linear(d_model, 1)
         self._init_pos_encoding()
 
     def _init_pos_encoding(self):
@@ -147,8 +147,7 @@ class Denoiser(nn.Module):
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
 
-        outputs = self.output_proj(x)  # [batch, seq_len, 2]
-        mu_prior = outputs[..., 0]  # [batch, seq_len]
+        mu_prior = self.output_proj(x).squeeze(-1)  # [batch, seq_len]
         sigma_prior = F.softplus(1e3 * self.log_sigma_prior)
 
         # Prior: N(noisy_seq, 1 - signal_var)
@@ -293,7 +292,7 @@ def train_batch(
     assert (
         dsnr_dt.shape == x0_errors.shape
     ), f"dsnr_dt.shape = {dsnr_dt.shape}, x0_errors.shape = {x0_errors.shape}"
-    # losses = (torch.ones_like(dsnr_dt) * x0_errors).sum(dim=-1)
+    losses = (dsnr_dt * x0_errors).sum(dim=-1)
     losses = x0_errors.sum(dim=-1)
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
     loss = losses.mean()
