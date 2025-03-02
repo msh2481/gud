@@ -97,7 +97,7 @@ def get_config(
             "seq_len": len(permutation),
         },
         "generator_config": {
-            "generator_class": "LogisticMapPermutation",
+            "generator_class": "Zero",  # "LogisticMapPermutation",
             "length": len(permutation),
             "permutation": permutation,
         },
@@ -135,28 +135,28 @@ def run(
     )
 
 
-name = "slope-6"
+name = "test"  # "cont-1"
+run(kind="UD", direction="swaps", step=1, window=2, comment=f"{name}")
 
-
-for rep in range(10):
-    for step in [1, 2, 4, 8, 12]:
-        run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-        w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
-            2,
-            4,
-            8,
-            12,
-            16,
-            24,
-            32,
-            128,
-        ]
-        for w in sorted(list(set(w_candidates))):
-            run(
-                kind="UD",
-                direction="swaps",
-                step=step,
-                window=w,
-                comment=f"{name} #{rep}",
-            )
-        run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
+# for rep in range(10):
+#     for step in [1, 2, 4, 8, 12]:
+#         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
+#         w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
+#             2,
+#             4,
+#             8,
+#             12,
+#             16,
+#             24,
+#             32,
+#             128,
+#         ]
+#         for w in sorted(list(set(w_candidates))):
+#             run(
+#                 kind="UD",
+#                 direction="swaps",
+#                 step=step,
+#                 window=w,
+#                 comment=f"{name} #{rep}",
+#             )
+#         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")

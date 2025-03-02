@@ -25,8 +25,6 @@ torch.set_default_dtype(torch.float64)
 ex = Experiment("denoising_diffusion")
 ex.observers.append(MongoObserver(db_name="sacred"))
 
-EPS = 1e-8
-
 
 @ex.config
 def config():
@@ -46,18 +44,16 @@ def config():
     train_config = {
         "output_path": "denoiser.pt",
         "epochs": 200,
-        "batch_size": 32,
+        "batch_size": 16,
         "dataset_size": 2000,
         "lr": 1e-3,
         "eval_every": 20,
-        "importance_sampling": False,
     }
 
     # Diffusion configuration
     diffusion_config = {
         "window": 1,
         "sampling_steps": 400,
-        "start_from": 0,
     }
 
     generator_config = {
@@ -68,11 +64,28 @@ def config():
     }
 
 
+@typed
+def combine_gaussians(
+    mu_prior: Float[TT, "..."],
+    sigma_prior: Float[TT, "..."],
+    mu_posterior: Float[TT, "..."],
+    sigma_posterior: Float[TT, "..."],
+) -> tuple[Float[TT, "..."], Float[TT, "..."]]:
+    precision_prior = 1.0 / sigma_prior
+    precision_posterior = 1.0 / sigma_posterior
+    precision_combined = precision_prior + precision_posterior
+    sigma_combined = 1.0 / precision_combined
+    mu_combined = sigma_combined * (
+        precision_prior * mu_prior + precision_posterior * mu_posterior
+    )
+    return mu_combined, sigma_combined
+
+
 class Denoiser(nn.Module):
     @typed
     def __init__(
         self,
-        seq_len: int,
+        N: int,
         d_model: int = 256,
         n_heads: int = 8,
         n_layers: int = 4,
@@ -81,10 +94,10 @@ class Denoiser(nn.Module):
     ):
         super().__init__()
         self.use_causal_mask = use_causal_mask
-        self.pos_encoding = nn.Parameter(torch.zeros(1, seq_len, d_model))
+        self.pos_encoding = nn.Parameter(torch.zeros(1, N, d_model))
         self.input_proj = nn.Linear(3, d_model)
 
-        mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1)
+        mask = torch.triu(torch.ones(N, N), diagonal=1)
         mask = mask.masked_fill(mask == 1, float("-inf"))
         self.register_buffer("causal_mask", mask)
 
@@ -101,7 +114,8 @@ class Denoiser(nn.Module):
             num_layers=n_layers,
             enable_nested_tensor=False,
         )
-        self.output_proj = nn.Linear(d_model, 1)
+        # Modified to output both mu and log_sigma
+        self.output_proj = nn.Linear(d_model, 2)
         self._init_pos_encoding()
 
     def _init_pos_encoding(self):
@@ -124,65 +138,81 @@ class Denoiser(nn.Module):
     ) -> Float[TT, "batch seq_len"]:
         x = torch.stack(
             [noisy_seq, torch.sqrt(signal_var), torch.sqrt(1 - signal_var)], dim=-1
-        )  # [batch, seq_len, 2]
+        )  # [batch, seq_len, 3]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding
         if self.use_causal_mask:
             x = self.transformer(x, mask=self.causal_mask)  # [batch, seq_len, d_model]
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
-        x = self.output_proj(x)  # [batch, seq_len, 1]
-        x = x.squeeze(-1)  # [batch, seq_len]
-        return x
+
+        outputs = self.output_proj(x)  # [batch, seq_len, 2]
+        mu_likelihood = outputs[..., 0]  # [batch, seq_len]
+        log_sigma_likelihood = outputs[..., 1]  # [batch, seq_len]
+        sigma_likelihood = F.softplus(log_sigma_likelihood)
+
+        # Prior: N(noisy_seq, 1 - signal_var)
+        mu_prior = noisy_seq
+        sigma_prior = 1 - signal_var
+
+        mu, _ = combine_gaussians(
+            mu_prior=mu_prior,
+            sigma_prior=sigma_prior,
+            mu_posterior=mu_likelihood,
+            sigma_posterior=sigma_likelihood,
+        )
+
+        return mu_likelihood
 
 
+@typed
+def backward_process(
+    model: nn.Module,
+    schedule: Schedule,
+    *,
+    p: Float[TT, "batch"],
+    t: Float[TT, "batch"],
+    x_t: Float[TT, "batch seq_len"],
+) -> tuple[Float[TT, "batch seq_len"], Float[TT, "batch seq_len"]]:
+    assert (p < t).all(), f"p must be less than t, got p={p}, t={t}"
+    alpha_0p = schedule.signal_var(p)
+    alpha_0t = schedule.signal_var(t)
+    alpha_pt = alpha_0t / alpha_0p
+    beta_0p = 1 - alpha_0p
+    beta_0t = 1 - alpha_0t
+    beta_pt = 1 - alpha_pt
+    x0_hat = model(x_t, alpha_0p)
+    mu = (
+        beta_pt / beta_0t * alpha_0p.sqrt() * x0_hat
+        + beta_0p / beta_0t * alpha_pt.sqrt() * x_t
+    )
+    sigma = beta_0p / beta_0t * beta_pt
+    return mu, sigma
+
+
+@typed
 @ex.capture
-def get_samples(model, x_1, schedule, diffusion_config):
+def get_samples(
+    model: nn.Module,
+    x_1: Float[TT, "batch seq_len"],
+    schedule: Schedule,
+    diffusion_config: dict,
+) -> Float[TT, "batch n_steps seq_len"]:
     """Sample from the diffusion model following the schedule."""
     device = x_1.device
     n_steps = diffusion_config["sampling_steps"]
     batch_size, seq_len = x_1.shape
+    xs = torch.zeros(batch_size, n_steps + 1, seq_len, device=device)
+    ts = torch.arange(n_steps + 1, device=device, dtype=torch.float64) / n_steps
+    ts = ts.repeat(batch_size, 1)
+    xs[:, n_steps] = x_1
 
-    # Assert that tensors are float64
-    assert x_1.dtype == torch.float64, f"x_t should be float64, got {x_1.dtype}"
-    assert (
-        schedule.signal_var.dtype == torch.float64
-    ), f"schedule.signal_var should be float64, got {schedule.signal_var.dtype}"
-    assert (
-        schedule.signal_ratio.dtype == torch.float64
-    ), f"schedule.signal_ratio should be float64, got {schedule.signal_ratio.dtype}"
-
-    # Store all intermediate steps [batch, n_steps, seq_len]
-    xs = torch.zeros(batch_size, n_steps, seq_len, device=device)
-    xs[:, -1] = x_1
-    eps = EPS
-
-    for it in reversed(range(n_steps - 1)):
-        curr_var = schedule.signal_var[it + 1]
-        assert not curr_var.isnan().any(), f"curr_var is nan at it={it}"
-        alpha = schedule.signal_ratio[it + 1]
-        beta_cur = schedule.noise_level[it + 1]
-        pi_cur = schedule.signal_var[it + 1]
-        pi_prev = schedule.signal_var[it]
-        assert ((1 - pi_prev) / (1 - pi_cur) <= 1).all(), "pi_prev must be >= pi_cur"
-        sigma = beta_cur * (1 - pi_prev) / (1 - pi_cur)
-        x_cur = xs[:, it + 1]
-        assert not x_cur.isnan().any(), f"x_cur is nan at it={it}"
-        pred_noise = model(
-            x_cur,
-            curr_var.repeat(batch_size, 1),
-            alpha.repeat(batch_size, 1),
-        )
-        assert (
-            pred_noise.dtype == torch.float64
-        ), f"pred_noise should be float64, got {pred_noise.dtype}"
-        upscale_coef = 1 / torch.sqrt(alpha)
-        noise_coef = beta_cur / (torch.sqrt(1 - curr_var) + eps)
-        x_new = upscale_coef * (x_cur - noise_coef * pred_noise)
-
-        if it < n_steps - 2:
-            x_new = x_new + torch.sqrt(sigma) * torch.randn_like(x_new)
-        xs[:, it] = x_new
+    for it in reversed(range(n_steps)):
+        x_t = xs[:, it + 1]
+        p = ts[:, it]
+        t = ts[:, it + 1]
+        mu, sigma = backward_process(model, schedule, p=p, t=t, x_t=x_t)
+        xs[:, it] = mu + sigma * torch.randn_like(x_t)
     return xs.flip(dims=[1])
 
 
@@ -194,12 +224,11 @@ def setup_model(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     model = Denoiser(
-        seq_len=model_config["seq_len"],
+        N=model_config["seq_len"],
         d_model=model_config["d_model"],
         n_heads=model_config["n_heads"],
         n_layers=model_config["n_layers"],
         dropout=model_config["dropout"],
-        predict_x0=model_config["predict_x0"],
         use_causal_mask=model_config["use_causal_mask"],
     )
     model.to(device)
@@ -225,15 +254,10 @@ def get_dataset(
         generator.sample(10)
     # generator.append_to_save()
     clean_data = generator.data[: train_config["dataset_size"]]
-    schedule = Schedule.make_rolling(
-        seq_len=model_config["seq_len"],
-        window=diffusion_config["window"],
-        n_steps=(
-            diffusion_config["n_steps"]
-            if not inference
-            else diffusion_config["n_steps_eval"]
-        ),
-        start_from=diffusion_config["start_from"],
+    w = torch.tensor(diffusion_config["window"], dtype=torch.float64)
+    schedule = Schedule(
+        N=model_config["seq_len"],
+        w=w,
     )
     visualize_schedule(schedule)
     dataset = DiffusionDataset(clean_data, schedule)
@@ -250,69 +274,26 @@ def train_batch(
     batch: tuple[
         Float[TT, "batch seq_len"],  # xt
         Float[TT, "batch seq_len"],  # signal_var
-        Float[TT, "batch seq_len"],  # signal_ratio
-        Float[TT, "batch seq_len"],  # true_noise
-        Int[TT, "batch"],  # timestep
+        Float[TT, "batch seq_len"],  # dsnr_dt
+        Float[TT, "batch seq_len"],  # x0
+        Float[TT, "batch"],  # timestep
     ],
     opt: torch.optim.Optimizer,
     device: torch.device,
-    schedule: Schedule,
-    loss_stats: Float[TT, "n_steps"] | None = None,  # Now a tensor of EMA values
-    dataset: DiffusionDataset | None = None,
-    train_config: dict | None = None,
 ) -> float:
-    xt, signal_var, signal_ratio, true_noise, timesteps = batch
-    xt, signal_var, signal_ratio, true_noise = (
+    xt, signal_var, dsnr_dt, x0, timestep = batch
+    xt, signal_var, dsnr_dt, x0 = (
         xt.to(device),
         signal_var.to(device),
-        signal_ratio.to(device),
-        true_noise.to(device),
+        dsnr_dt.to(device),
+        x0.to(device),
     )
-
-    # Assert that tensors are float64
-    assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
-    assert (
-        signal_var.dtype == torch.float64
-    ), f"signal_var should be float64, got {signal_var.dtype}"
-    assert (
-        signal_ratio.dtype == torch.float64
-    ), f"signal_ratio should be float64, got {signal_ratio.dtype}"
-    assert (
-        true_noise.dtype == torch.float64
-    ), f"true_noise should be float64, got {true_noise.dtype}"
-
-    pred_noise = model(xt, signal_var, signal_ratio)
-    assert (
-        pred_noise.dtype == torch.float64
-    ), f"pred_noise should be float64, got {pred_noise.dtype}"
-
-    prev_signal_var = signal_var / signal_ratio
-    k = (1 - prev_signal_var) / (1 - signal_var)
-    r = k ** (1 - S)
-    variance_term = r - 1 - r.log()
-    weights = (1 - signal_ratio) / (k**S * signal_ratio * (1 - signal_var) + EPS)
-    T = len(schedule.signal_var) - 1
-    mean_term = weights * (pred_noise - true_noise).square()
-    losses = T / 2 * (variance_term + mean_term).sum(dim=-1)
+    x0_hat = model(xt, signal_var)
+    x0_errors = (x0_hat - x0).square()
+    # losses = (dsnr_dt * x0_errors).sum(dim=-1)
+    losses = x0_errors.sum(dim=-1)
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
-
-    # Apply importance sampling weight correction if using non-uniform sampling
-    sampling_probs = dataset.sampling_probs
-    if sampling_probs is not None:
-        correction = 1.0 / (T * sampling_probs[timesteps])
-        losses = losses * correction
-
     loss = losses.mean()
-
-    # Update EMA of losses per timestep
-    if loss_stats is not None:
-        alpha = 0.9  # EMA decay rate
-        batch_losses = losses.detach()
-        for t, l in zip(timesteps, batch_losses):
-            if loss_stats[t] > 1e4:
-                loss_stats[t] = l
-            else:
-                loss_stats[t] = alpha * loss_stats[t] + (1 - alpha) * l
 
     opt.zero_grad()
     loss.backward()
@@ -333,34 +314,17 @@ def save_model(model: nn.Module, train_config: dict, device: torch.device) -> No
 def train_denoiser(_run, model_config, train_config, diffusion_config):
     """Train the denoising model"""
     model, device = setup_model()
-    param_vector = torch.cat([p.data.view(-1) for p in model.parameters()]).detach()
     _generator, _clean_data, _schedule, train_loader = get_dataset(inference=False)
-    opt = torch.optim.Adam(model.parameters(), lr=train_config["lr"])
-
-    n_steps = len(_schedule.signal_var)
-    loss_stats = torch.ones(n_steps, device=device) * 1e9
-
+    opt = torch.optim.Adam(
+        model.parameters(), lr=train_config["lr"], betas=(0.95, 0.999)
+    )
     losses = []
     for epoch in range(train_config["epochs"]):
         epoch_losses = []
 
         for batch in train_loader:
-            loss = train_batch(
-                model=model,
-                batch=tuple(batch),
-                opt=opt,
-                device=device,
-                schedule=_schedule,
-                loss_stats=loss_stats,
-                dataset=train_loader.dataset,
-            )
+            loss = train_batch(model=model, batch=tuple(batch), opt=opt, device=device)
             epoch_losses.append(loss)
-
-        if train_config["importance_sampling"]:
-            sampling_probs = loss_stats.abs()
-            sampling_probs /= sampling_probs.sum() + EPS
-            if train_loader.dataset is not None:
-                train_loader.dataset.set_sampling_probs(sampling_probs)
 
         # Compute epoch & avg loss
         current_loss = sum(epoch_losses) / len(epoch_losses)
@@ -369,18 +333,12 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         avg_loss = sum(losses[half:]) / len(losses[half:])
         logger.info(f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f})")
 
-        # sampling_probs = loss_stats / (loss_stats.sum() + EPS)
-        # logger.info(f"EMA losses: {loss_stats[:30]}")
-        # logger.info(
-        #     f"Sample from them: {sorted((torch.multinomial(sampling_probs[1:], 30) + 1).tolist())}"
-        # )
-
         # Log metrics to Sacred
         _run.log_scalar("loss", current_loss, epoch)
         _run.log_scalar("avg_loss", avg_loss, epoch)
 
         # Save model & evaluate
-        if epoch % train_config["eval_every"] == 0:
+        if (epoch + 1) % train_config["eval_every"] == 0:
             save_model(model=model, device=device)
             evaluate(model_path=train_config["output_path"], epoch_number=epoch)
 
@@ -393,12 +351,11 @@ def load_model(
 ) -> tuple[nn.Module, str]:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = Denoiser(
-        seq_len=model_config["seq_len"],
+        N=model_config["seq_len"],
         d_model=model_config["d_model"],
         n_heads=model_config["n_heads"],
         n_layers=model_config["n_layers"],
         dropout=model_config["dropout"],
-        predict_x0=model_config["predict_x0"],
         use_causal_mask=model_config["use_causal_mask"],
     )
     if not Path(model_path).exists():
@@ -499,15 +456,11 @@ def evaluate(
     ), f"clean_data should be float64, got {clean_data.dtype}"
 
     schedule = schedule.to(device)
-    signal_var = schedule.signal_var[-1]
-    assert (
-        signal_var.max().item() <= 0.011
-    ), f"not noised enough: signal_var.max() = {signal_var.max().item()}"
     with torch.no_grad():
-        xt = torch.randn((n_samples, model_config["seq_len"]), dtype=torch.float64)
-        assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
+        x_1 = torch.randn((n_samples, model_config["seq_len"]), dtype=torch.float64)
+        assert x_1.dtype == torch.float64, f"xt should be float64, got {x_1.dtype}"
 
-        samples = get_samples(model, xt, schedule)
+        samples = get_samples(model, x_1, schedule)
         assert (
             samples.dtype == torch.float64
         ), f"samples should be float64, got {samples.dtype}"

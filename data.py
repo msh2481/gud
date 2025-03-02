@@ -347,89 +347,26 @@ class DiffusionDataset(Dataset):
     def __init__(self, data: Float[TT, "batch seq_len"], schedule: Schedule):
         self.data = data
         self.schedule = schedule
-        self.sampling_probs = None
-
-    @typed
-    def set_sampling_probs(self, probs: Float[TT, "n_steps"] | None) -> None:
-        """Set the sampling probabilities for importance sampling."""
-        self.sampling_probs = probs
 
     @typed
     def __getitem__(self, idx: int) -> tuple[
         Float[TT, "seq_len"],  # xt
         Float[TT, "seq_len"],  # signal_var
-        Float[TT, "seq_len"],  # signal_ratio
-        Float[TT, "seq_len"],  # noise
-        Int[TT, ""],  # timestep
+        Float[TT, "seq_len"],  # dsnr_dt
+        Float[TT, "seq_len"],  # x0
+        Float[TT, ""],  # timestep
     ]:
         x0 = self.data[idx]
-        signal_var, signal_ratio, timestep = self.schedule.sample_signal_var(
-            self.sampling_probs
-        )
+        timestep = self.schedule.sample_time()
+        signal_var = self.schedule.signal_var(timestep)
+        dsnr_dt = self.schedule.dsnr_dt(timestep)
         noise = torch.randn_like(x0)
         xt = torch.sqrt(signal_var) * x0 + torch.sqrt(1 - signal_var) * noise
-        return xt, signal_var, signal_ratio, noise, timestep
+        return xt, signal_var, dsnr_dt, x0, timestep
 
     def __len__(self):
         return len(self.data)
 
 
-@typed
-def visualize_data(
-    n_samples: int = 200,
-    seq_len: int = 20,
-    chaos_ratio: float = 1.0,
-    save_path: str | None = None,
-):
-    """Generate and visualize sample sequences"""
-    generator = OneMinusX.load(
-        length=seq_len, clauses=OneMinusX.complicated(seq_len), tolerance=1e-3
-    )
-    generator.inspect()
-    while len(generator) < n_samples:
-        generator.sample(10, debug=True)
-    generator.append_to_save()
-    data = generator.data[:n_samples]
-
-    plt.figure(figsize=(15, 5))
-    for i in range(n_samples):
-        plt.plot(data[i], alpha=0.2, lw=1, color="k")
-    plt.title(f"Generated Sequences (chaos_ratio={chaos_ratio}, seed={seed})")
-
-    if save_path:
-        plt.savefig(save_path)
-        logger.info(f"Plot saved to {save_path}")
-    else:
-        plt.show()
-    plt.close()
-
-
-@typed
-def visualize_dataset():
-    dataset_size = 3
-    seq_len = 30
-    speed = 1.0
-    denoise_steps = 2
-    start_from = 3
-    generator = Zigzag.load(length=seq_len, tolerance=1e-4)
-    while len(generator) < dataset_size:
-        generator.sample(10, debug=True)
-    clean_data = generator.data[:dataset_size]
-    schedule = Schedule.make_rolling(
-        seq_len, speed=speed, denoise_steps=denoise_steps, start_from=start_from
-    )
-    visualize_schedule(schedule)
-    dataset = DiffusionDataset(clean_data, schedule)
-    for _ in range(3):
-        xt, signal_var, signal_ratio, noise, timestep = dataset[0]
-        plt.plot(xt, label=f"xt")
-        plt.plot(signal_var, label=f"signal_var")
-        plt.plot(signal_ratio, label=f"signal_ratio")
-        plt.plot(noise, label=f"noise")
-        plt.legend()
-        plt.show()
-
-
 if __name__ == "__main__":
-    visualize_data()
-    # visualize_dataset()
+    pass

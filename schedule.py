@@ -53,37 +53,82 @@ class Schedule:
         ), f"snr_1 = {self.snr_1} must be less than snr_mid = {self.snr_mid}"
 
     @typed
-    def raw_progress(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
-        time_per_token = self.w / (self.N - 1 + self.w)
-        v = (self.N - 1) / (1 - time_per_token)
-        l = torch.arange(self.N, dtype=torch.float64) / v
-        r = l + time_per_token
-        return (times[:, None] - l) / (r - l)
+    def to(self, device: torch.device | str) -> "Schedule":
+        self.w = self.w.to(device)
+        self.snr_0 = self.snr_0.to(device)
+        self.snr_mid = self.snr_mid.to(device)
+        self.snr_1 = self.snr_1.to(device)
+        return self
 
     @typed
-    def snr(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+    def raw_progress(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        is_single_time = times.ndim == 0
+        if is_single_time:
+            times = times.unsqueeze(0)
+
+        time_per_token = self.w / (self.N - 1 + self.w)
+        v = (self.N - 1) / (1 - time_per_token)
+        l = torch.arange(self.N, dtype=torch.float64, device=self.w.device) / v
+        r = l + time_per_token
+        result = (times[:, None] - l) / (r - l)
+
+        if is_single_time:
+            result = result.squeeze(0)
+
+        return result
+
+    @typed
+    def snr(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        is_single_time = times.ndim == 0
+        if is_single_time:
+            times = times.unsqueeze(0)
+
         progress = self.raw_progress(times).clamp(0, 1)
         exponential = (
             self.snr_0.log() + 2 * progress * (self.snr_mid.log() - self.snr_0.log())
         ).exp()
         linear = self.snr_mid + 2 * (progress - 0.5) * (self.snr_1 - self.snr_mid)
-        return torch.where(progress < 0.5, exponential, linear)
+        result = torch.where(progress < 0.5, exponential, linear)
+
+        if is_single_time:
+            result = result.squeeze(0)
+
+        return result
 
     @typed
-    def log_snr(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+    def log_snr(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
         return torch.log(self.snr(times))
 
     @typed
-    def dsnr_dt(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+    def dsnr_dt(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        is_single_time = times.ndim == 0
+        if is_single_time:
+            times = times.unsqueeze(0)
+
         progress = self.raw_progress(times)
         is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
         common = is_denoising * 2 * (self.N - 1 + self.w) / self.w
         exponential = self.snr(times) * (self.snr_mid.log() - self.snr_0.log())
         linear = self.snr_1 - self.snr_mid
-        return (common * torch.where(progress < 0.5, exponential, linear)).abs()
+        result = (common * torch.where(progress < 0.5, exponential, linear)).abs()
+
+        if is_single_time:
+            result = result.squeeze(0)
+
+        return result
 
     @typed
-    def signal_var(self, times: Float[TT, "T"]) -> Float[TT, "T N"]:
+    def signal_var(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
         snr = self.snr(times)
         return snr / (snr + 1)
 
