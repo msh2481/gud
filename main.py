@@ -96,6 +96,7 @@ class Denoiser(nn.Module):
         self.use_causal_mask = use_causal_mask
         self.pos_encoding = nn.Parameter(torch.zeros(1, N, d_model))
         self.input_proj = nn.Linear(3, d_model)
+        self.log_sigma_prior = nn.Parameter(torch.zeros(1, 1))
 
         mask = torch.triu(torch.ones(N, N), diagonal=1)
         mask = mask.masked_fill(mask == 1, float("-inf"))
@@ -147,19 +148,18 @@ class Denoiser(nn.Module):
             x = self.transformer(x)  # [batch, seq_len, d_model]
 
         outputs = self.output_proj(x)  # [batch, seq_len, 2]
-        mu_likelihood = outputs[..., 0]  # [batch, seq_len]
-        log_sigma_likelihood = outputs[..., 1]  # [batch, seq_len]
-        sigma_likelihood = F.softplus(log_sigma_likelihood)
+        mu_prior = outputs[..., 0]  # [batch, seq_len]
+        sigma_prior = F.softplus(1e3 * self.log_sigma_prior)
 
         # Prior: N(noisy_seq, 1 - signal_var)
-        mu_prior = noisy_seq
-        sigma_prior = 1 - signal_var
+        mu_likelihood = noisy_seq / torch.sqrt(signal_var)
+        sigma_likelihood = (1 - signal_var) / signal_var
 
         mu, _ = combine_gaussians(
-            mu_prior=mu_prior,
-            sigma_prior=sigma_prior,
-            mu_posterior=mu_likelihood,
-            sigma_posterior=sigma_likelihood,
+            mu_prior=mu_likelihood,
+            sigma_prior=sigma_likelihood,
+            mu_posterior=mu_prior,
+            sigma_posterior=sigma_prior,
         )
 
         return mu
@@ -290,14 +290,20 @@ def train_batch(
     )
     x0_hat = model(xt, signal_var)
     x0_errors = (x0_hat - x0).square()
-    losses = (dsnr_dt * x0_errors).sum(dim=-1)
-    # losses = x0_errors.sum(dim=-1)
+    assert (
+        dsnr_dt.shape == x0_errors.shape
+    ), f"dsnr_dt.shape = {dsnr_dt.shape}, x0_errors.shape = {x0_errors.shape}"
+    # losses = (torch.ones_like(dsnr_dt) * x0_errors).sum(dim=-1)
+    losses = x0_errors.sum(dim=-1)
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
     loss = losses.mean()
 
     opt.zero_grad()
     loss.backward()
     opt.step()
+
+    # Use other loss for logging (TODO: remove)
+    loss = (dsnr_dt * x0_errors).sum(dim=-1).mean()
     return loss.item()
 
 

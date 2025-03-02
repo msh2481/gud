@@ -15,7 +15,7 @@ def get_config(
     step: int | None = None,
     window: float | int | None = None,
     n_steps: int | None = None,
-    n_steps_eval: int | None = None,
+    sampling_steps: int | None = None,
 ):
     if direction == "forward":
         permutation = list(range(20))
@@ -87,8 +87,7 @@ def get_config(
     config_updates = {
         "diffusion_config": {
             "window": window,
-            "n_steps": n_steps,
-            "n_steps_eval": n_steps_eval,
+            "sampling_steps": sampling_steps,
         },
         "train_config": {
             "output_path": output_path,
@@ -125,7 +124,7 @@ def run(
         step=step,
         window=window,
         n_steps=n_steps,
-        n_steps_eval=n_steps_eval,
+        sampling_steps=n_steps_eval,
     )
     ex.run(
         config_updates=config_updates,
