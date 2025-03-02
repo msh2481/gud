@@ -36,8 +36,8 @@ class Schedule:
         *,
         N: int,
         w: Float[TT, ""],
-        alpha_0: float = 1 - 1e-4,
-        alpha_1: float = 1e-4,
+        alpha_0: float = 1 - 1e-2,
+        alpha_1: float = 1e-2,
     ):
         self.N = N
         self.w = w

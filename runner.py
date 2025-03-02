@@ -93,7 +93,8 @@ def get_config(
             "seq_len": len(permutation),
         },
         "generator_config": {
-            "generator_class": "OneMinusX",  # "LogisticMapPermutation",
+            # "generator_class": "OneMinusX",
+            "generator_class": "LogisticMapPermutation",
             "length": len(permutation),
             "permutation": permutation,
         },

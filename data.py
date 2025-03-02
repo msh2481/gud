@@ -362,6 +362,7 @@ class DiffusionDataset(Dataset):
         Float[TT, "seq_len"],  # signal_var
         Float[TT, "seq_len"],  # dsnr_dt
         Float[TT, "seq_len"],  # x0
+        Float[TT, "seq_len"],  # snr
         Float[TT, ""],  # timestep
     ]:
         x0 = self.data[idx]
@@ -370,7 +371,8 @@ class DiffusionDataset(Dataset):
         dsnr_dt = self.schedule.dsnr_dt(timestep)
         noise = torch.randn_like(x0)
         xt = torch.sqrt(signal_var) * x0 + torch.sqrt(1 - signal_var) * noise
-        return xt, signal_var, dsnr_dt, x0, timestep
+        snr = self.schedule.snr(timestep)
+        return xt, signal_var, dsnr_dt, x0, snr, timestep
 
     def __len__(self):
         return len(self.data)

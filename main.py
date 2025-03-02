@@ -275,24 +275,26 @@ def train_batch(
         Float[TT, "batch seq_len"],  # signal_var
         Float[TT, "batch seq_len"],  # dsnr_dt
         Float[TT, "batch seq_len"],  # x0
-        Float[TT, "batch"],  # timestep
+        Float[TT, "batch seq_len"],  # snr
+        Float[TT, "seq_len"],  # timestep
     ],
     opt: torch.optim.Optimizer,
     device: torch.device,
 ) -> float:
-    xt, signal_var, dsnr_dt, x0, timestep = batch
-    xt, signal_var, dsnr_dt, x0 = (
+    xt, signal_var, dsnr_dt, x0, snr, timestep = batch
+    xt, signal_var, dsnr_dt, x0, snr = (
         xt.to(device),
         signal_var.to(device),
         dsnr_dt.to(device),
         x0.to(device),
+        snr.to(device),
     )
     x0_hat = model(xt, signal_var)
     x0_errors = (x0_hat - x0).square()
     assert (
         dsnr_dt.shape == x0_errors.shape
     ), f"dsnr_dt.shape = {dsnr_dt.shape}, x0_errors.shape = {x0_errors.shape}"
-    losses = (dsnr_dt * x0_errors).sum(dim=-1)
+    # losses = (dsnr_dt * x0_errors).sum(dim=-1)
     losses = x0_errors.sum(dim=-1)
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
     loss = losses.mean()
@@ -321,7 +323,8 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
     model, device = setup_model()
     _generator, _clean_data, _schedule, train_loader = get_dataset(inference=False)
     opt = torch.optim.Adam(
-        model.parameters(), lr=train_config["lr"], betas=(0.95, 0.999)
+        model.parameters(),
+        lr=train_config["lr"],  # betas=(0.95, 0.999)
     )
     losses = []
     for epoch in range(train_config["epochs"]):
