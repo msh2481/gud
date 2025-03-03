@@ -1,6 +1,7 @@
 *.png
 *.gif
 *.pt
+*.npy
 __pycache__
 data/
 runs/
