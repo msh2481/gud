@@ -44,7 +44,7 @@ def config():
     train_config = {
         "output_path": "denoiser.pt",
         "epochs": 200,
-        "batch_size": 16,
+        "batch_size": 32,
         "dataset_size": 2000,
         "lr": 1e-3,
         "eval_every": 20,
@@ -147,21 +147,21 @@ class Denoiser(nn.Module):
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
 
-        mu_prior = self.output_proj(x).squeeze(-1)  # [batch, seq_len]
-        sigma_prior = F.softplus(1e3 * self.log_sigma_prior)
+        return self.output_proj(x).squeeze(-1)  # [batch, seq_len]
+        # sigma_prior = F.softplus(1e3 * self.log_sigma_prior)
 
-        # Prior: N(noisy_seq, 1 - signal_var)
-        mu_likelihood = noisy_seq / torch.sqrt(signal_var)
-        sigma_likelihood = (1 - signal_var) / signal_var
+        # # Prior: N(noisy_seq, 1 - signal_var)
+        # mu_likelihood = noisy_seq / torch.sqrt(signal_var)
+        # sigma_likelihood = (1 - signal_var) / signal_var
 
-        mu, _ = combine_gaussians(
-            mu_prior=mu_likelihood,
-            sigma_prior=sigma_likelihood,
-            mu_posterior=mu_prior,
-            sigma_posterior=sigma_prior,
-        )
+        # mu, _ = combine_gaussians(
+        #     mu_prior=mu_likelihood,
+        #     sigma_prior=sigma_likelihood,
+        #     mu_posterior=mu_prior,
+        #     sigma_posterior=sigma_prior,
+        # )
 
-        return mu_likelihood + 0 * sigma_prior
+        # return mu
 
 
 @typed
@@ -297,8 +297,8 @@ def train_batch(
     assert (
         dsnr_dt.shape == x0_errors.shape
     ), f"dsnr_dt.shape = {dsnr_dt.shape}, x0_errors.shape = {x0_errors.shape}"
-    # losses = (dsnr_dt * x0_errors).sum(dim=-1)
-    losses = x0_errors.sum(dim=-1)
+    losses = (dsnr_dt * x0_errors).sum(dim=-1)
+    # losses = x0_errors.sum(dim=-1)
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
     loss = losses.mean()
 
@@ -338,7 +338,7 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
             epoch_losses.append(loss)
 
         # Compute epoch & avg loss
-        current_loss = np.median(epoch_losses)
+        current_loss = np.mean(epoch_losses)
         losses.append(current_loss)
         half = len(losses) // 2
         avg_loss = sum(losses[half:]) / len(losses[half:])

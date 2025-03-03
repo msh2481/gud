@@ -83,22 +83,22 @@ class Schedule:
     def snr(
         self, times: Float[TT, "T"] | Float[TT, ""]
     ) -> Float[TT, "T N"] | Float[TT, "N"]:
-        # is_single_time = times.ndim == 0
-        # if is_single_time:
-        #     times = times.unsqueeze(0)
+        is_single_time = times.ndim == 0
+        if is_single_time:
+            times = times.unsqueeze(0)
 
-        # progress = self.raw_progress(times).clamp(0, 1)
-        # base = torch.tensor(10)
-        # # a = -1.774113580011895
-        # # b = -0.22276306695937126
-        # # snr = torch.pow(base, -2.0 * progress**2) * self.snr_0
-        # snr = (
-        #     self.snr_0.log() + progress**0.25 * (self.snr_1.log() - self.snr_0.log())
-        # ).exp()
-        # if is_single_time:
-        #     snr = snr.squeeze(0)
+        progress = self.raw_progress(times).clamp(0, 1)
+        base = torch.tensor(10)
+        # a = -1.774113580011895
+        # b = -0.22276306695937126
+        # snr = torch.pow(base, -2.0 * progress**2) * self.snr_0
+        snr = (
+            self.snr_0.log() + progress**2 * (self.snr_1.log() - self.snr_0.log())
+        ).exp()
+        if is_single_time:
+            snr = snr.squeeze(0)
 
-        # return snr
+        return snr
 
         # is_single_time = times.ndim == 0
         # if is_single_time:
@@ -122,8 +122,8 @@ class Schedule:
     def signal_var(
         self, times: Float[TT, "T"] | Float[TT, ""]
     ) -> Float[TT, "T N"] | Float[TT, "N"]:
-        # snr = self.snr(times)
-        # return snr / (snr + 1)
+        snr = self.snr(times)
+        return snr / (snr + 1)
 
         is_single_time = times.ndim == 0
         if is_single_time:
