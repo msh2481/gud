@@ -44,9 +44,9 @@ def config():
     train_config = {
         "output_path": "denoiser.pt",
         "epochs": 200,
-        "batch_size": 32,
+        "batch_size": 4,
         "dataset_size": 2000,
-        "lr": 1e-3,
+        "lr": 5e-4,
         "eval_every": 20,
     }
 
@@ -297,8 +297,8 @@ def train_batch(
     assert (
         dsnr_dt.shape == x0_errors.shape
     ), f"dsnr_dt.shape = {dsnr_dt.shape}, x0_errors.shape = {x0_errors.shape}"
-    losses = (dsnr_dt * x0_errors).sum(dim=-1)
-    # losses = x0_errors.sum(dim=-1)
+    # losses = (dsnr_dt * x0_errors).sum(dim=-1)
+    losses = x0_errors.sum(dim=-1)
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
     loss = losses.mean()
 
@@ -384,9 +384,11 @@ def create_animation(
     output_path: str,
     generator: DataGenerator,
     model_config: dict,
+    diffusion_config: dict,
 ) -> None:
     fig = plt.figure(figsize=(15, 5))
     ax = plt.gca()
+    n_steps = diffusion_config["sampling_steps"]
 
     def update(frame):
         ax.clear()
@@ -399,8 +401,7 @@ def create_animation(
         losses = generator.losses_per_clause(current)[0].detach().cpu().numpy()
         losses_str = " ".join(f"{loss:.3f}" for loss in losses)
         ax.set_title(
-            f"Denoising Steps (Step {frame + 1}/{len(schedule.signal_var)})"
-            f"\nLosses: {losses_str}"
+            f"Denoising Steps (Step {frame + 1}/{n_steps})" f"\nLosses: {losses_str}"
         )
         ax.axhline(y=0, color="black", lw=0.5)
         ax.axhline(y=1, color="black", lw=0.5)
@@ -409,8 +410,8 @@ def create_animation(
     anim = animation.FuncAnimation(
         fig,
         update,
-        frames=len(schedule.signal_var),
-        interval=1500,
+        frames=n_steps,
+        interval=40,
         blit=False,
     )
     anim.save(output_path, writer="pillow")
@@ -420,12 +421,13 @@ def create_animation(
 
 @ex.capture
 def animated_sample(
+    model_path: str,
     diffusion_config: dict,
     train_config: dict,
     output_path: str = "denoising_animation.gif",
 ):
     """Sample from a trained model"""
-    model, device = load_model(model_path=train_config["output_path"])
+    model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
 
     # Assert that tensors are float64
@@ -437,7 +439,11 @@ def animated_sample(
     assert x0.dtype == torch.float64, f"x0 should be float64, got {x0.dtype}"
 
     schedule = schedule.to(device)
-    signal_var = schedule.signal_var[-1]
+    assert isinstance(
+        schedule, Schedule
+    ), f"schedule should be a Schedule, got {type(schedule)}"
+    times = torch.ones((1,), device=device)
+    signal_var = schedule.signal_var(times)
     xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(1 - signal_var)
     assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
 
@@ -551,7 +557,7 @@ def sample_distribution(
     diffusion_config: dict,
     train_config: dict,
     model_config: dict,
-    n_samples: int = 1000,
+    n_samples: int = 100,
 ):
     """Generate multiple samples and visualize their distribution.
 
@@ -629,5 +635,6 @@ def sample_distribution(
 @ex.automain
 def main():
     train_denoiser()
-    # animated_sample()
-    # sample_distribution(model_path="models/69900e21-5e57-45d9-914c-93a299b79f93.pt")
+    # model_path = "models/f041ddae-7ac2-47f2-9800-0b7db215880e.pt"
+    # animated_sample(model_path=model_path)
+    # sample_distribution(model_path=model_path)

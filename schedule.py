@@ -70,7 +70,9 @@ class Schedule:
 
         time_per_token = self.w / (self.N - 1 + self.w)
         v = (self.N - 1) / (1 - time_per_token)
-        l = torch.arange(self.N, dtype=torch.float64, device=self.w.device) / v
+        l = (
+            self.N - 1 - torch.arange(self.N, dtype=torch.float64, device=self.w.device)
+        ) / v
         r = l + time_per_token
         result = (times[:, None] - l) / (r - l)
 
@@ -93,7 +95,7 @@ class Schedule:
         # b = -0.22276306695937126
         # snr = torch.pow(base, -2.0 * progress**2) * self.snr_0
         snr = (
-            self.snr_0.log() + progress**2 * (self.snr_1.log() - self.snr_0.log())
+            self.snr_0.log() + progress * (self.snr_1.log() - self.snr_0.log())
         ).exp()
         if is_single_time:
             snr = snr.squeeze(0)
