@@ -89,7 +89,7 @@ class Denoiser(nn.Module):
         d_model: int = 256,
         n_heads: int = 8,
         n_layers: int = 4,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
         use_causal_mask: bool = False,
     ):
         super().__init__()
@@ -115,7 +115,6 @@ class Denoiser(nn.Module):
             num_layers=n_layers,
             enable_nested_tensor=False,
         )
-        # Modified to output both mu and log_sigma
         self.output_proj = nn.Linear(d_model, 1)
         self._init_pos_encoding()
 
@@ -146,22 +145,7 @@ class Denoiser(nn.Module):
             x = self.transformer(x, mask=self.causal_mask)  # [batch, seq_len, d_model]
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
-
         return self.output_proj(x).squeeze(-1)  # [batch, seq_len]
-        # sigma_prior = F.softplus(1e3 * self.log_sigma_prior)
-
-        # # Prior: N(noisy_seq, 1 - signal_var)
-        # mu_likelihood = noisy_seq / torch.sqrt(signal_var)
-        # sigma_likelihood = (1 - signal_var) / signal_var
-
-        # mu, _ = combine_gaussians(
-        #     mu_prior=mu_likelihood,
-        #     sigma_prior=sigma_likelihood,
-        #     mu_posterior=mu_prior,
-        #     sigma_posterior=sigma_prior,
-        # )
-
-        # return mu
 
 
 @typed
