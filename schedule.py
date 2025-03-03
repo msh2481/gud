@@ -36,7 +36,7 @@ class Schedule:
         *,
         N: int,
         w: Float[TT, ""],
-        alpha_0: float = 1 - 1e-2,
+        alpha_0: float = 1 - 1e-4,
         alpha_1: float = 1e-2,
     ):
         self.N = N
@@ -83,21 +83,47 @@ class Schedule:
     def snr(
         self, times: Float[TT, "T"] | Float[TT, ""]
     ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        # is_single_time = times.ndim == 0
+        # if is_single_time:
+        #     times = times.unsqueeze(0)
+
+        # progress = self.raw_progress(times).clamp(0, 1)
+        # exponential = (
+        #     self.snr_0.log() + 2 * progress * (self.snr_mid.log() - self.snr_0.log())
+        # ).exp()
+        # linear = self.snr_mid + 2 * (progress - 0.5) * (self.snr_1 - self.snr_mid)
+        # result = torch.where(progress < 0.5, exponential, linear)
+
+        # if is_single_time:
+        #     result = result.squeeze(0)
+
+        # return result
+        var = self.signal_var(times)
+        return var / (1 - var)
+
+    @typed
+    def signal_var(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        # snr = self.snr(times)
+        # return snr / (snr + 1)
+
         is_single_time = times.ndim == 0
         if is_single_time:
             times = times.unsqueeze(0)
 
         progress = self.raw_progress(times).clamp(0, 1)
-        exponential = (
-            self.snr_0.log() + 2 * progress * (self.snr_mid.log() - self.snr_0.log())
-        ).exp()
-        linear = self.snr_mid + 2 * (progress - 0.5) * (self.snr_1 - self.snr_mid)
-        result = torch.where(progress < 0.5, exponential, linear)
-
+        base = torch.tensor(10)
+        a = -1.774113580011895
+        b = -0.22276306695937126
+        c = 0.0005085076282694549
+        var = torch.pow(base, a * progress**2 + b * progress + c) * (
+            self.snr_0 / (1 + self.snr_0)
+        )
         if is_single_time:
-            result = result.squeeze(0)
+            var = var.squeeze(0)
 
-        return result
+        return var
 
     @typed
     def log_snr(
@@ -124,13 +150,6 @@ class Schedule:
             result = result.squeeze(0)
 
         return result
-
-    @typed
-    def signal_var(
-        self, times: Float[TT, "T"] | Float[TT, ""]
-    ) -> Float[TT, "T N"] | Float[TT, "N"]:
-        snr = self.snr(times)
-        return snr / (snr + 1)
 
     @typed
     def sample_time(self) -> Float[TT, ""]:
