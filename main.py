@@ -161,7 +161,7 @@ class Denoiser(nn.Module):
             sigma_posterior=sigma_prior,
         )
 
-        return mu
+        return mu_likelihood + 0 * sigma_prior
 
 
 @typed
@@ -289,8 +289,11 @@ def train_batch(
         x0.to(device),
         snr.to(device),
     )
+    assert not signal_var.isnan().any(), f"signal_var is nan"
     x0_hat = model(xt, signal_var)
+    assert not x0_hat.isnan().any(), f"x0_hat is nan"
     x0_errors = (x0_hat - x0).square()
+
     assert (
         dsnr_dt.shape == x0_errors.shape
     ), f"dsnr_dt.shape = {dsnr_dt.shape}, x0_errors.shape = {x0_errors.shape}"
@@ -335,7 +338,7 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
             epoch_losses.append(loss)
 
         # Compute epoch & avg loss
-        current_loss = sum(epoch_losses) / len(epoch_losses)
+        current_loss = np.median(epoch_losses)
         losses.append(current_loss)
         half = len(losses) // 2
         avg_loss = sum(losses[half:]) / len(losses[half:])

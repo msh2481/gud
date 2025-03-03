@@ -36,7 +36,7 @@ class Schedule:
         *,
         N: int,
         w: Float[TT, ""],
-        alpha_0: float = 1 - 1e-4,
+        alpha_0: float = 1 - 1e-2,
         alpha_1: float = 1e-2,
     ):
         self.N = N
@@ -88,6 +88,23 @@ class Schedule:
         #     times = times.unsqueeze(0)
 
         # progress = self.raw_progress(times).clamp(0, 1)
+        # base = torch.tensor(10)
+        # # a = -1.774113580011895
+        # # b = -0.22276306695937126
+        # # snr = torch.pow(base, -2.0 * progress**2) * self.snr_0
+        # snr = (
+        #     self.snr_0.log() + progress**0.25 * (self.snr_1.log() - self.snr_0.log())
+        # ).exp()
+        # if is_single_time:
+        #     snr = snr.squeeze(0)
+
+        # return snr
+
+        # is_single_time = times.ndim == 0
+        # if is_single_time:
+        #     times = times.unsqueeze(0)
+
+        # progress = self.raw_progress(times).clamp(0, 1)
         # exponential = (
         #     self.snr_0.log() + 2 * progress * (self.snr_mid.log() - self.snr_0.log())
         # ).exp()
@@ -114,12 +131,9 @@ class Schedule:
 
         progress = self.raw_progress(times).clamp(0, 1)
         base = torch.tensor(10)
-        a = -1.774113580011895
-        b = -0.22276306695937126
-        c = 0.0005085076282694549
-        var = torch.pow(base, a * progress**2 + b * progress + c) * (
-            self.snr_0 / (1 + self.snr_0)
-        )
+        # a = -1.774113580011895
+        # b = -0.22276306695937126
+        var = torch.pow(base, -2.0 * progress**3) * (self.snr_0 / (1 + self.snr_0))
         if is_single_time:
             var = var.squeeze(0)
 
@@ -139,12 +153,17 @@ class Schedule:
         if is_single_time:
             times = times.unsqueeze(0)
 
-        progress = self.raw_progress(times)
-        is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
-        common = is_denoising * 2 * (self.N - 1 + self.w) / self.w
-        exponential = self.snr(times) * (self.snr_mid.log() - self.snr_0.log())
-        linear = self.snr_1 - self.snr_mid
-        result = (common * torch.where(progress < 0.5, exponential, linear)).abs()
+        # progress = self.raw_progress(times)
+        # is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
+        # common = is_denoising * 2 * (self.N - 1 + self.w) / self.w
+        # exponential = self.snr(times) * (self.snr_mid.log() - self.snr_0.log())
+        # linear = self.snr_1 - self.snr_mid
+        # result = (common * torch.where(progress < 0.5, exponential, linear)).abs()
+
+        eps = torch.minimum((0.5 - torch.abs(times - 0.5)) / 2, torch.tensor(1e-6))
+        snr_minus = self.snr(times - eps)
+        snr_plus = self.snr(times + eps)
+        result = -((snr_plus - snr_minus) / (2 * eps))
 
         if is_single_time:
             result = result.squeeze(0)
