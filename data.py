@@ -374,9 +374,112 @@ class DiffusionDataset(Dataset):
         snr = self.schedule.snr(timestep)
         return xt, signal_var, dsnr_dt, x0, snr, timestep
 
+    @typed
+    def sample_distribution(
+        self,
+        generator: DataGenerator,
+        n_samples: int = 100,
+        timestep: float | None = None,
+        output_path: str = "dataset_samples.png",
+    ) -> tuple[Float[TT, "n_samples seq_len"], Float[TT, "n_samples"]]:
+        """Generate and visualize multiple samples from the dataset.
+
+        This method:
+        1. Generates n_samples from the dataset at a specific timestep
+        2. Plots all samples as line plots to visualize the distribution
+        3. Creates a histogram of the first element values across all samples
+
+        Args:
+            generator: DataGenerator to calculate losses
+            n_samples: Number of samples to generate
+            timestep: Specific timestep to use (None for random timesteps)
+            output_path: Path to save the visualization
+
+        Returns:
+            tuple: (samples, losses) - the generated samples and their losses
+        """
+        # Ensure we have enough samples
+        n_samples = min(n_samples, len(self.data))
+
+        # Generate samples
+        samples = []
+        x0_samples = []
+
+        for i in range(n_samples):
+            if timestep is None:
+                # Get a clean sample
+                x0 = xt = self.data[i]
+            else:
+                # Get a sample with specific timestep
+                x0 = self.data[i]
+                t = torch.tensor(timestep, dtype=torch.float64)
+                signal_var = self.schedule.signal_var(t)
+                noise = torch.randn_like(x0)
+                xt = torch.sqrt(signal_var) * x0 + torch.sqrt(1 - signal_var) * noise
+
+            samples.append(xt)
+            x0_samples.append(x0)
+
+        # Stack samples
+        samples = torch.stack(samples)
+        x0_samples = torch.stack(x0_samples)
+
+        # Calculate losses for each sample
+        losses = generator.loss(samples)
+
+        # Create figure with two subplots
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}
+        )
+
+        # Main plot for all samples
+        for i in range(n_samples):
+            ax1.plot(samples[i].cpu().numpy(), alpha=0.2, color="blue", lw=0.1)
+
+        # Add statistics to the plot
+        mean_loss = losses.mean().item()
+        q50 = losses.quantile(0.50).item()
+
+        title = f"Distribution of {n_samples} Dataset Samples"
+        if timestep is not None:
+            title += f" (t={timestep:.3f})"
+        title += f"\nMean Loss: {mean_loss:.3f}, Median: {q50:.3f}"
+
+        ax1.set_title(title)
+        ax1.set_xlabel("Position")
+        ax1.set_ylabel("Value")
+        ax1.grid(True, alpha=0.3)
+
+        i = 3
+        first_elements = samples[:, i].cpu().numpy()
+        ax2.hist(first_elements, bins=20, alpha=0.7, color="blue")
+        ax2.set_title(f"Histogram of {i}th element values")
+        ax2.set_xlabel("Value")
+        ax2.set_ylabel("Frequency")
+        ax2.grid(True, alpha=0.3)
+
+        # Adjust layout and save
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300)
+        plt.close()
+
+        logger.info(f"Dataset sample distribution visualization saved to {output_path}")
+        return samples, losses
+
     def __len__(self):
         return len(self.data)
 
 
 if __name__ == "__main__":
-    pass
+    permutation = list(range(20))
+    generator = LogisticMapPermutation(
+        length=len(permutation),
+        permutation=permutation,
+        tolerance=1e-3,
+    )
+    w = torch.tensor(128, dtype=torch.float64)
+    schedule = Schedule(w=w, N=20)
+    while len(generator) < 2000:
+        generator.sample(10)
+    dataset = DiffusionDataset(generator.data[:2000], schedule)
+    dataset.sample_distribution(generator=generator, n_samples=10**4)

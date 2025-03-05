@@ -48,12 +48,17 @@ def config():
         "dataset_size": 2000,
         "lr": 5e-4,
         "eval_every": 20,
+        "lr_schedule": "cosine",  # Options: "constant", "cosine", "linear", "step"
+        "lr_warmup_epochs": 10,
+        "lr_min_factor": 0.01,
+        "lr_step_size": 50,  # For step schedule: epochs per step
+        "lr_gamma": 0.1,  # For step schedule: multiplicative factor
     }
 
     # Diffusion configuration
     diffusion_config = {
-        "window": 1,
-        "sampling_steps": 400,
+        "window": 128,
+        "sampling_steps": 1000,
     }
 
     generator_config = {
@@ -313,6 +318,9 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         model.parameters(),
         lr=train_config["lr"],  # betas=(0.95, 0.999)
     )
+
+    scheduler = setup_lr_scheduler(optimizer=opt)
+
     losses = []
     for epoch in range(train_config["epochs"]):
         epoch_losses = []
@@ -326,11 +334,20 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         losses.append(current_loss)
         half = len(losses) // 2
         avg_loss = sum(losses[half:]) / len(losses[half:])
-        logger.info(f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f})")
+
+        # Get current learning rate
+        current_lr = opt.param_groups[0]["lr"]
+        logger.info(
+            f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f}, lr={current_lr:.6f})"
+        )
 
         # Log metrics to Sacred
         _run.log_scalar("loss", current_loss, epoch)
         _run.log_scalar("avg_loss", avg_loss, epoch)
+        _run.log_scalar("lr", current_lr, epoch)
+
+        # Step the learning rate scheduler
+        scheduler.step()
 
         # Save model & evaluate
         if (epoch + 1) % train_config["eval_every"] == 0:
@@ -616,9 +633,113 @@ def sample_distribution(
         return final_samples, losses
 
 
+@ex.capture
+@typed
+def setup_lr_scheduler(
+    optimizer: torch.optim.Optimizer, train_config: dict
+) -> torch.optim.lr_scheduler._LRScheduler:
+    """Set up learning rate scheduler based on configuration.
+
+    Returns:
+        scheduler: The PyTorch scheduler
+    """
+    epochs = train_config["epochs"]
+    lr = train_config["lr"]
+    schedule_type = train_config["lr_schedule"]
+    warmup_epochs = train_config["lr_warmup_epochs"]
+    min_factor = train_config["lr_min_factor"]
+
+    # Pre-compute the full learning rate schedule for logging
+    lr_values = torch.zeros(epochs)
+
+    if schedule_type == "constant":
+        # Constant learning rate after warmup
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lambda epoch: min(1.0, epoch / warmup_epochs) if warmup_epochs > 0 else 1.0,
+        )
+
+        # Fill lr_values
+        for epoch in range(epochs):
+            if epoch < warmup_epochs:
+                lr_values[epoch] = lr * (epoch / warmup_epochs)
+            else:
+                lr_values[epoch] = lr
+
+    elif schedule_type == "cosine":
+        # Cosine annealing with warmup
+        if warmup_epochs > 0:
+            scheduler = torch.optim.lr_scheduler.ChainedScheduler(
+                [
+                    # Warmup phase
+                    torch.optim.lr_scheduler.LinearLR(
+                        optimizer,
+                        start_factor=1e-8,
+                        end_factor=1.0,
+                        total_iters=warmup_epochs,
+                    ),
+                    # Cosine annealing phase
+                    torch.optim.lr_scheduler.CosineAnnealingLR(
+                        optimizer, T_max=epochs - warmup_epochs, eta_min=lr * min_factor
+                    ),
+                ]
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=epochs, eta_min=lr * min_factor
+            )
+    elif schedule_type == "linear":
+        if warmup_epochs > 0:
+            scheduler = torch.optim.lr_scheduler.ChainedScheduler(
+                [
+                    torch.optim.lr_scheduler.LinearLR(
+                        optimizer,
+                        start_factor=1e-8,
+                        end_factor=1.0,
+                        total_iters=warmup_epochs,
+                    ),
+                    torch.optim.lr_scheduler.LinearLR(
+                        optimizer,
+                        start_factor=1.0,
+                        end_factor=min_factor,
+                        total_iters=epochs - warmup_epochs,
+                    ),
+                ]
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1.0, end_factor=min_factor, total_iters=epochs
+            )
+    elif schedule_type == "step":
+        step_size = train_config["lr_step_size"]
+        gamma = train_config["lr_gamma"]
+        if warmup_epochs > 0:
+            scheduler = torch.optim.lr_scheduler.ChainedScheduler(
+                [
+                    torch.optim.lr_scheduler.LinearLR(
+                        optimizer,
+                        start_factor=1e-8,
+                        end_factor=1.0,
+                        total_iters=warmup_epochs,
+                    ),
+                    torch.optim.lr_scheduler.StepLR(
+                        optimizer, step_size=step_size, gamma=gamma
+                    ),
+                ]
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, step_size=step_size, gamma=gamma
+            )
+    else:
+        raise ValueError(f"Unknown learning rate schedule: {schedule_type}")
+
+    return scheduler
+
+
 @ex.automain
 def main():
-    train_denoiser()
-    # model_path = "models/f041ddae-7ac2-47f2-9800-0b7db215880e.pt"
+    # train_denoiser()
+    model_path = "models/c981d737-73b6-46e6-9b08-cffae5932057.pt"
     # animated_sample(model_path=model_path)
-    # sample_distribution(model_path=model_path)
+    sample_distribution(model_path=model_path)
