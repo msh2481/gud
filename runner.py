@@ -89,15 +89,14 @@ def get_config(
         "train_config": {
             "output_path": output_path,
         },
-        "model_config": {
-            "seq_len": len(permutation),
-        },
-        "generator_config": {
-            # "generator_class": "OneMinusX",
-            "generator_class": "LogisticMapPermutation",
-            "length": len(permutation),
-            "permutation": permutation,
-        },
+        # "model_config": {
+        #     "seq_len": len(permutation),
+        # },
+        # "generator_config": {
+        #     "generator_class": "LogisticMapPermutation",
+        #     "length": len(permutation),
+        #     "permutation": permutation,
+        # },
     }
     return config_updates
 
@@ -112,7 +111,7 @@ def run(
     comment: str = "",
 ):
     if n_steps_eval is None:
-        n_steps_eval = 100
+        n_steps_eval = 400
 
     config_updates = get_config(
         kind=kind,
@@ -129,27 +128,28 @@ def run(
     )
 
 
-name = "cont-2"
+name = "collapse-2"
 
 for rep in range(10):
-    for step in [1, 2, 4, 8, 12]:
+    # for step in [1, 2, 4, 8, 12]:
+    for step in [1, 4]:
         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-        w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
-            2,
-            4,
-            8,
-            12,
-            16,
-            24,
-            32,
-            128,
-        ]
-        for w in sorted(list(set(w_candidates))):
-            run(
-                kind="UD",
-                direction="swaps",
-                step=step,
-                window=w,
-                comment=f"{name} #{rep}",
-            )
+        # w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
+        #     2,
+        #     4,
+        #     8,
+        #     12,
+        #     16,
+        #     24,
+        #     32,
+        #     128,
+        # ]
+        # for w in sorted(list(set(w_candidates))):
+        #     run(
+        #         kind="UD",
+        #         direction="swaps",
+        #         step=step,
+        #         window=w,
+        #         comment=f"{name} #{rep}",
+        #     )
         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")

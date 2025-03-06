@@ -1,12 +1,12 @@
 import math
 from pathlib import Path
-from typing import Annotated
 
 import matplotlib.animation as animation
 import numpy as np
 import torch
 import torch.nn.functional as F
 from beartype import beartype as typed
+from beartype.typing import Any
 from data import *
 from jaxtyping import Float, Int
 from loguru import logger
@@ -29,10 +29,11 @@ ex.observers.append(MongoObserver(db_name="sacred"))
 @ex.config
 def config():
     tags = ["gud"]
+    length = 2
 
     # Model configuration
     model_config = {
-        "seq_len": 20,
+        "seq_len": length,
         "d_model": 64,
         "n_heads": 16,
         "n_layers": 4,
@@ -43,29 +44,30 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 200,
-        "batch_size": 4,
+        "epochs": 1000,
+        "batch_size": 32,
         "dataset_size": 2000,
-        "lr": 5e-4,
+        "lr": 4e-3,
         "eval_every": 20,
-        "lr_schedule": "cosine",  # Options: "constant", "cosine", "linear", "step"
-        "lr_warmup_epochs": 10,
+        "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
+        "lr_warmup_epochs": 50,
         "lr_min_factor": 0.01,
-        "lr_step_size": 50,  # For step schedule: epochs per step
-        "lr_gamma": 0.1,  # For step schedule: multiplicative factor
+        "lr_step_size": 30,  # For step schedule: epochs per step
+        "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
     }
 
     # Diffusion configuration
     diffusion_config = {
-        "window": 128,
-        "sampling_steps": 1000,
+        "window": 1,
+        "sampling_steps": 400,
     }
 
     generator_config = {
-        "generator_class": "LogisticMapPermutation",
-        "length": 20,
+        # "generator_class": "LogisticMapPermutation",
+        "generator_class": "OneMinusX",
+        "length": length,
         "tolerance": 1e-3,
-        "permutation": list(range(20)),
+        "permutation": list(range(length)),
     }
 
 
@@ -73,15 +75,15 @@ def config():
 def combine_gaussians(
     mu_prior: Float[TT, "..."],
     sigma_prior: Float[TT, "..."],
-    mu_posterior: Float[TT, "..."],
-    sigma_posterior: Float[TT, "..."],
+    mu_likelihood: Float[TT, "..."],
+    sigma_likelihood: Float[TT, "..."],
 ) -> tuple[Float[TT, "..."], Float[TT, "..."]]:
     precision_prior = 1.0 / sigma_prior
-    precision_posterior = 1.0 / sigma_posterior
-    precision_combined = precision_prior + precision_posterior
+    precision_likelihood = 1.0 / sigma_likelihood
+    precision_combined = precision_prior + precision_likelihood
     sigma_combined = 1.0 / precision_combined
     mu_combined = sigma_combined * (
-        precision_prior * mu_prior + precision_posterior * mu_posterior
+        precision_prior * mu_prior + precision_likelihood * mu_likelihood
     )
     return mu_combined, sigma_combined
 
@@ -150,7 +152,19 @@ class Denoiser(nn.Module):
             x = self.transformer(x, mask=self.causal_mask)  # [batch, seq_len, d_model]
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
-        return self.output_proj(x).squeeze(-1)  # [batch, seq_len]
+        result = self.output_proj(x).squeeze(-1)  # [batch, seq_len]
+        n0 = noisy_seq[:, 0]
+        alpha = signal_var[:, 0]
+        x0, _ = combine_gaussians(
+            mu_prior=torch.zeros_like(n0),
+            sigma_prior=torch.ones_like(n0),
+            mu_likelihood=n0,
+            sigma_likelihood=torch.sqrt((1 - alpha) / alpha),
+        )
+        prediction = 0 * result
+        prediction[:, 0] = x0
+        prediction[:, 1] = 1 - x0
+        return prediction
 
 
 @typed
@@ -200,7 +214,7 @@ def get_samples(
         p = ts[:, it]
         t = ts[:, it + 1]
         mu, sigma = backward_process(model, schedule, p=p, t=t, x_t=x_t)
-        xs[:, it] = mu + sigma * torch.randn_like(x_t)
+        xs[:, it] = mu + sigma.sqrt() * torch.randn_like(x_t)
     return xs.flip(dims=[1])
 
 
@@ -635,9 +649,7 @@ def sample_distribution(
 
 @ex.capture
 @typed
-def setup_lr_scheduler(
-    optimizer: torch.optim.Optimizer, train_config: dict
-) -> torch.optim.lr_scheduler._LRScheduler:
+def setup_lr_scheduler(optimizer: torch.optim.Optimizer, train_config: dict) -> Any:
     """Set up learning rate scheduler based on configuration.
 
     Returns:
@@ -739,7 +751,7 @@ def setup_lr_scheduler(
 
 @ex.automain
 def main():
-    # train_denoiser()
-    model_path = "models/c981d737-73b6-46e6-9b08-cffae5932057.pt"
+    train_denoiser()
+    # model_path = "models/b129c8c3-4b4d-41d9-bfe1-3a2b41f5ab97.pt"
     # animated_sample(model_path=model_path)
-    sample_distribution(model_path=model_path)
+    # sample_distribution(model_path=model_path, n_samples=1000)
