@@ -89,14 +89,14 @@ def get_config(
         "train_config": {
             "output_path": output_path,
         },
-        # "model_config": {
-        #     "seq_len": len(permutation),
-        # },
-        # "generator_config": {
-        #     "generator_class": "LogisticMapPermutation",
-        #     "length": len(permutation),
-        #     "permutation": permutation,
-        # },
+        "model_config": {
+            "seq_len": len(permutation),
+        },
+        "generator_config": {
+            "generator_class": "LogisticMapPermutation",
+            "length": len(permutation),
+            "permutation": permutation,
+        },
     }
     return config_updates
 

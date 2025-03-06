@@ -29,7 +29,7 @@ ex.observers.append(MongoObserver(db_name="sacred"))
 @ex.config
 def config():
     tags = ["gud"]
-    length = 2
+    length = 20
 
     # Model configuration
     model_config = {
@@ -47,7 +47,7 @@ def config():
         "epochs": 1000,
         "batch_size": 32,
         "dataset_size": 2000,
-        "lr": 4e-3,
+        "lr": 2e-3,
         "eval_every": 20,
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
         "lr_warmup_epochs": 50,
@@ -63,8 +63,7 @@ def config():
     }
 
     generator_config = {
-        # "generator_class": "LogisticMapPermutation",
-        "generator_class": "OneMinusX",
+        "generator_class": "LogisticMapPermutation",
         "length": length,
         "tolerance": 1e-3,
         "permutation": list(range(length)),
@@ -152,19 +151,7 @@ class Denoiser(nn.Module):
             x = self.transformer(x, mask=self.causal_mask)  # [batch, seq_len, d_model]
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
-        result = self.output_proj(x).squeeze(-1)  # [batch, seq_len]
-        n0 = noisy_seq[:, 0]
-        alpha = signal_var[:, 0]
-        x0, _ = combine_gaussians(
-            mu_prior=torch.zeros_like(n0),
-            sigma_prior=torch.ones_like(n0),
-            mu_likelihood=n0,
-            sigma_likelihood=torch.sqrt((1 - alpha) / alpha),
-        )
-        prediction = 0 * result
-        prediction[:, 0] = x0
-        prediction[:, 1] = 1 - x0
-        return prediction
+        return self.output_proj(x).squeeze(-1)
 
 
 @typed
