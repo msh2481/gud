@@ -354,9 +354,16 @@ class OneMinusX(DataGenerator):
 class MNIST(DataGenerator):
     @typed
     def __init__(self, **params) -> None:
+        self.resize_to = 14
+        self.side = 10
+        assert (
+            params["length"] == self.side * self.side
+        ), f"MNIST length must be {self.side * self.side}"
         super().__init__(**params)
         transform = transforms.Compose(
             [
+                transforms.Resize(self.resize_to),
+                transforms.CenterCrop(self.side),
                 transforms.ToTensor(),
                 transforms.Lambda(lambda x: x.reshape(-1)),
             ]
@@ -399,7 +406,7 @@ class MNIST(DataGenerator):
 
 def test_mnist():
     # Create MNIST data generator
-    mnist_gen = MNIST(length=784, tolerance=0.01)
+    mnist_gen = MNIST(length=100, tolerance=0.01)
 
     # Sample some data points
     samples = mnist_gen.sample(batch_size=5)
@@ -407,7 +414,7 @@ def test_mnist():
     # Reshape back to 28x28 and visualize
     fig, axes = plt.subplots(1, 5, figsize=(15, 3))
     for i, ax in enumerate(axes):
-        img = samples[i].reshape(28, 28)
+        img = samples[i].reshape(10, 10)
         assert 0 <= img.min() <= img.max() <= 1, "Invalid pixel values"
         ax.imshow(img, cmap="gray")
         ax.axis("off")

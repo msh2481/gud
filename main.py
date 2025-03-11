@@ -18,6 +18,7 @@ from sacred.observers import FileStorageObserver, MongoObserver
 from schedule import Schedule, visualize_schedule
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
+from torchvision.utils import make_grid
 
 torch.set_default_dtype(torch.float64)
 
@@ -32,13 +33,15 @@ def config():
     length = 20
 
     # Model configuration
+    # TODO: add 16 heads and 4 layers, eval_samples = 100, eval_every = 90
     model_config = {
         "seq_len": length,
         "d_model": 64,
-        "n_heads": 16,
-        "n_layers": 4,
+        "n_heads": 4,
+        "n_layers": 2,
         "dropout": 0.0,
         "use_causal_mask": False,
+        "mlp": False,
     }
 
     # Training configuration
@@ -48,7 +51,8 @@ def config():
         "batch_size": 8,
         "dataset_size": 2000,
         "lr": 2e-3,
-        "eval_every": 90,
+        "eval_every": 10,
+        "eval_samples": 9,
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
         "lr_warmup_epochs": 10,
         "lr_min_factor": 0.01,
@@ -98,32 +102,33 @@ class Denoiser(nn.Module):
         n_layers: int = 4,
         dropout: float = 0.0,
         use_causal_mask: bool = False,
+        mlp: bool = False,
     ):
         super().__init__()
-        self.use_causal_mask = use_causal_mask
-        self.pos_encoding = nn.Parameter(torch.zeros(1, N, d_model))
-        self.input_proj = nn.Linear(3, d_model)
-        self.log_sigma_prior = nn.Parameter(torch.zeros(1, 1))
-
-        mask = torch.triu(torch.ones(N, N), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float("-inf"))
-        self.register_buffer("causal_mask", mask)
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=n_heads,
-            dim_feedforward=4 * d_model,
-            dropout=dropout,
-            batch_first=True,  # [batch, seq, features]
-            norm_first=True,  # Better training stability
-        )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=n_layers,
-            enable_nested_tensor=False,
-        )
-        self.output_proj = nn.Linear(d_model, 1)
-        self._init_pos_encoding()
+        if mlp:
+            raise NotImplementedError("MLP not implemented")
+        else:
+            self.use_causal_mask = use_causal_mask
+            self.pos_encoding = nn.Parameter(torch.zeros(1, N, d_model))
+            self.input_proj = nn.Linear(3, d_model)
+            mask = torch.triu(torch.ones(N, N), diagonal=1)
+            mask = mask.masked_fill(mask == 1, float("-inf"))
+            self.register_buffer("causal_mask", mask)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=n_heads,
+                dim_feedforward=4 * d_model,
+                dropout=dropout,
+                batch_first=True,  # [batch, seq, features]
+                norm_first=True,  # Better training stability
+            )
+            self.transformer = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=n_layers,
+                enable_nested_tensor=False,
+            )
+            self.output_proj = nn.Linear(d_model, 1)
+            self._init_pos_encoding()
 
     def _init_pos_encoding(self):
         """Initialize positional encodings using sine/cosine functions"""
@@ -220,6 +225,7 @@ def setup_model(
         n_layers=model_config["n_layers"],
         dropout=model_config["dropout"],
         use_causal_mask=model_config["use_causal_mask"],
+        mlp=model_config["mlp"],
     )
     model.to(device)
     n_parameters = sum(p.numel() for p in model.parameters())
@@ -361,7 +367,8 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         scheduler.step()
 
         # Save model & evaluate
-        if (epoch + 1) % train_config["eval_every"] == 0:
+        # TODO: return +1
+        if (epoch + 0) % train_config["eval_every"] == 0:
             save_model(model=model, device=device)
             evaluate(model_path=train_config["output_path"], epoch_number=epoch)
 
@@ -467,15 +474,71 @@ def animated_sample(
         create_animation(samples, schedule, output_path, generator)
 
 
+@typed
+def show_1d_samples(
+    final_samples: Float[TT, "batch seq_len"],
+    final_losses: Float[TT, "batch"],
+    n_samples: int,
+    epoch_number: int | None = None,
+):
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}
+    )
+    for i in range(n_samples):
+        ax1.plot(final_samples[i].cpu().numpy(), alpha=0.2, color="blue", linewidth=0.5)
+    mean_loss = final_losses.mean().item()
+    q50 = final_losses.quantile(0.50).item()
+
+    title = f"Distribution of {n_samples} Samples"
+    if epoch_number is not None:
+        title += f" (Epoch {epoch_number})"
+    title += f"\nMean Loss: {mean_loss:.3f}, Median: {q50:.3f}"
+
+    ax1.set_title(title)
+    ax1.set_xlabel("Position")
+    ax1.set_ylabel("Value")
+    ax1.grid(True, alpha=0.3)
+    first_elements = final_samples[:, 0].cpu().numpy()
+    ax2.hist(first_elements, bins=20, alpha=0.7, color="blue")
+    ax2.set_xlim(0, 1)
+    ax2.set_title("Histogram of First Element Values")
+    ax2.set_xlabel("Value")
+    ax2.set_ylabel("Frequency")
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("samples.png", dpi=300)
+    plt.close()
+
+
+@typed
+def show_mnist_samples(
+    final_samples: Float[TT, "batch seq_len"],
+    final_losses: Float[TT, "batch"],
+    n_samples: int,
+    epoch_number: int | None = None,
+):
+    # Convert final_samples to numpy and reshape to 10x10 images
+    # Then use torchvision.utils.make_grid to create a grid of the images
+    # Grid should be 3x3
+    # Save the grid to a file
+    images = final_samples[:9].reshape(-1, 1, 10, 10)
+    grid = make_grid(images, nrow=3)
+    plt.imshow(grid.permute(1, 2, 0))
+    plt.savefig("samples.png", dpi=300)
+    plt.close()
+
+
 @ex.capture
 def evaluate(
     _run,
     model_config: dict,
+    train_config: dict,
     model_path: str = "denoiser.pt",
-    n_samples: int = 100,
     epoch_number: int | None = None,
 ):
     """Evaluate the model"""
+    n_samples = train_config["eval_samples"]
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
 
@@ -517,47 +580,8 @@ def evaluate(
         # Save distribution of final samples
         final_samples = samples[:, -1, :]  # [n_samples, seq_len]
         final_losses = generator.loss(final_samples)
-
-        # Create figure with two subplots
-        fig, (ax1, ax2) = plt.subplots(
-            2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}
-        )
-
-        # Main plot for all samples
-        for i in range(n_samples):
-            ax1.plot(
-                final_samples[i].cpu().numpy(), alpha=0.2, color="blue", linewidth=0.5
-            )
-
-        # Add statistics to the plot
-        mean_loss = final_losses.mean().item()
-        q50 = final_losses.quantile(0.50).item()
-
-        title = f"Distribution of {n_samples} Samples"
-        if epoch_number is not None:
-            title += f" (Epoch {epoch_number})"
-        title += f"\nMean Loss: {mean_loss:.3f}, Median: {q50:.3f}"
-
-        ax1.set_title(title)
-        ax1.set_xlabel("Position")
-        ax1.set_ylabel("Value")
-        ax1.grid(True, alpha=0.3)
-
-        # Create histogram of first element values
-        first_elements = final_samples[:, 0].cpu().numpy()
-        ax2.hist(first_elements, bins=20, alpha=0.7, color="blue")
-        ax2.set_xlim(0, 1)
-        ax2.set_title("Histogram of First Element Values")
-        ax2.set_xlabel("Value")
-        ax2.set_ylabel("Frequency")
-        ax2.grid(True, alpha=0.3)
-
-        # Adjust layout and save
-        plt.tight_layout()
-        plt.savefig("samples.png", dpi=300)
-        plt.close()
-
-        logger.info("Evaluation visualization saved to samples.png")
+        # show_1d_samples(final_samples, final_losses, n_samples, epoch_number)
+        show_mnist_samples(final_samples, final_losses, n_samples, epoch_number)
 
         return final_samples, final_losses
 
