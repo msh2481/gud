@@ -44,22 +44,23 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 1000,
-        "batch_size": 32,
+        "epochs": 500,
+        "batch_size": 8,
         "dataset_size": 2000,
         "lr": 2e-3,
-        "eval_every": 20,
+        "eval_every": 90,
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
-        "lr_warmup_epochs": 50,
+        "lr_warmup_epochs": 10,
         "lr_min_factor": 0.01,
-        "lr_step_size": 30,  # For step schedule: epochs per step
+        "lr_step_size": 15,  # For step schedule: epochs per step
         "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
+        "loss_type": "mask_dsnr",  # Options: "simple", "vlb", "mask_dsnr"
     }
 
     # Diffusion configuration
     diffusion_config = {
         "window": 1,
-        "sampling_steps": 400,
+        "sampling_steps": 1000,
     }
 
     generator_config = {
@@ -270,6 +271,7 @@ def train_batch(
     ],
     opt: torch.optim.Optimizer,
     device: torch.device,
+    train_config: dict,
 ) -> float:
     xt, signal_var, dsnr_dt, x0, snr, timestep = batch
     xt, signal_var, dsnr_dt, x0, snr = (
@@ -287,8 +289,16 @@ def train_batch(
     assert (
         dsnr_dt.shape == x0_errors.shape
     ), f"dsnr_dt.shape = {dsnr_dt.shape}, x0_errors.shape = {x0_errors.shape}"
-    # losses = (dsnr_dt * x0_errors).sum(dim=-1)
-    losses = x0_errors.sum(dim=-1)
+    loss_type = train_config["loss_type"]
+    if loss_type == "simple":
+        losses = x0_errors.sum(dim=-1)
+    elif loss_type == "vlb":
+        losses = (dsnr_dt * x0_errors).sum(dim=-1)
+    elif loss_type == "mask_dsnr":
+        nonzero_mask = dsnr_dt.abs() > 1e-18
+        losses = (nonzero_mask * x0_errors).sum(dim=-1)
+    else:
+        raise ValueError(f"Invalid loss type: {loss_type}")
     assert losses.shape == (len(xt),), f"losses.shape = {losses.shape}"
     loss = losses.mean()
 
@@ -296,7 +306,7 @@ def train_batch(
     loss.backward()
     opt.step()
 
-    # Use other loss for logging (TODO: remove)
+    # Use VLB for logging
     loss = (dsnr_dt * x0_errors).sum(dim=-1).mean()
     return loss.item()
 

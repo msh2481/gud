@@ -15,6 +15,7 @@ from rich.progress import track
 from schedule import Schedule, visualize_schedule
 from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
+from torchvision import datasets, transforms
 
 
 class DataGenerator:
@@ -350,6 +351,77 @@ class OneMinusX(DataGenerator):
         return result
 
 
+class MNIST(DataGenerator):
+    @typed
+    def __init__(self, **params) -> None:
+        super().__init__(**params)
+        transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.reshape(-1)),
+            ]
+        )
+        self.mnist_data = datasets.MNIST(
+            root="./data",
+            train=self.init_params.get("train", True),
+            download=True,
+            transform=transform,
+        )
+
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
+        prefix = 100
+        batch_size = x.shape[0]
+        reference_data = torch.stack([self.mnist_data[i][0] for i in range(prefix)])
+        # Compute distances between each input and all reference samples
+        distances = (x.unsqueeze(1) - reference_data.unsqueeze(0)).square().sum(dim=2)
+        # Get minimum distance for each sample in the batch
+        min_distances = distances.min(dim=1, keepdim=True).values
+        return min_distances
+
+    @typed
+    def sample(
+        self, batch_size: int, debug: bool = False
+    ) -> Float[TT, "batch seq_len"]:
+        # For MNIST, we'll just sample random real MNIST images
+        indices = torch.randperm(len(self.mnist_data))[:batch_size]
+        result = torch.stack([self.mnist_data[i][0] for i in indices])
+
+        self.data = torch.cat([self.data, result], dim=0)
+        return result
+
+
+def test_mnist():
+    # Create MNIST data generator
+    mnist_gen = MNIST(length=784, tolerance=0.01)
+
+    # Sample some data points
+    samples = mnist_gen.sample(batch_size=5)
+
+    # Reshape back to 28x28 and visualize
+    fig, axes = plt.subplots(1, 5, figsize=(15, 3))
+    for i, ax in enumerate(axes):
+        img = samples[i].reshape(28, 28)
+        assert 0 <= img.min() <= img.max() <= 1, "Invalid pixel values"
+        ax.imshow(img, cmap="gray")
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.savefig("mnist_samples.png")
+    plt.close()
+
+    print(f"MNIST samples saved to mnist_samples.png")
+    print(
+        f"Sample shape: {samples.shape}, min: {samples.min().item()}, max: {samples.max().item()}"
+    )
+
+
 class DiffusionDataset(Dataset):
     @typed
     def __init__(self, data: Float[TT, "batch seq_len"], schedule: Schedule):
@@ -471,15 +543,4 @@ class DiffusionDataset(Dataset):
 
 
 if __name__ == "__main__":
-    permutation = list(range(20))
-    generator = LogisticMapPermutation(
-        length=len(permutation),
-        permutation=permutation,
-        tolerance=1e-3,
-    )
-    w = torch.tensor(128, dtype=torch.float64)
-    schedule = Schedule(w=w, N=20)
-    while len(generator) < 2000:
-        generator.sample(10)
-    dataset = DiffusionDataset(generator.data[:2000], schedule)
-    dataset.sample_distribution(generator=generator, n_samples=10**4)
+    test_mnist()
