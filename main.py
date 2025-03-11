@@ -8,9 +8,11 @@ import torch.nn.functional as F
 from beartype import beartype as typed
 from beartype.typing import Any
 from data import *
+import neptune
 from jaxtyping import Float, Int
 from loguru import logger
 from matplotlib import pyplot as plt
+from neptune.integrations.sacred import NeptuneObserver
 from numpy import ndarray as ND
 from rich.progress import track
 from sacred import Experiment
@@ -20,11 +22,16 @@ from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 from torchvision.utils import make_grid
 
+run = neptune.init_run(
+    project="mlxa/GUD",
+    api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI5NTIzY2UxZC1jMjI5LTRlYTQtYjQ0Yi1kM2JhMGU1NDllYTIifQ==",
+)
 torch.set_default_dtype(torch.float64)
 
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
 ex.observers.append(MongoObserver(db_name="sacred"))
+ex.observers.append(NeptuneObserver(run=run))
 
 
 @ex.config
