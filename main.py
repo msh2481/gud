@@ -31,7 +31,7 @@ torch.set_default_dtype(torch.float64)
 
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
-ex.observers.append(MongoObserver(db_name="sacred"))
+# ex.observers.append(MongoObserver(db_name="sacred"))
 ex.observers.append(NeptuneObserver(run=run))
 
 
@@ -156,8 +156,9 @@ class Denoiser(nn.Module):
         noisy_seq: Float[TT, "batch seq_len"],
         signal_var: Float[TT, "batch seq_len"],
     ) -> Float[TT, "batch seq_len"]:
+        dv = noisy_seq.device
         x = torch.stack(
-            [noisy_seq, torch.sqrt(signal_var), torch.sqrt(1 - signal_var)], dim=-1
+            [noisy_seq, torch.sqrt(signal_var).to(device=dv), torch.sqrt(1 - signal_var).to(device=dv)], dim=-1
         )  # [batch, seq_len, 3]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding

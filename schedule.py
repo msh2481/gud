@@ -67,7 +67,7 @@ class Schedule:
         is_single_time = times.ndim == 0
         if is_single_time:
             times = times.unsqueeze(0)
-
+        times = times.to(self.w.device)
         time_per_token = self.w / (self.N - 1 + self.w)
         v = (self.N - 1) / (1 - time_per_token)
         l = (
