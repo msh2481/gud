@@ -158,7 +158,12 @@ class Denoiser(nn.Module):
     ) -> Float[TT, "batch seq_len"]:
         dv = noisy_seq.device
         x = torch.stack(
-            [noisy_seq, torch.sqrt(signal_var).to(device=dv), torch.sqrt(1 - signal_var).to(device=dv)], dim=-1
+            [
+                noisy_seq,
+                torch.sqrt(signal_var).to(device=dv),
+                torch.sqrt(1 - signal_var).to(device=dv),
+            ],
+            dim=-1,
         )  # [batch, seq_len, 3]
         x = self.input_proj(x)  # [batch, seq_len, d_model]
         x = x + self.pos_encoding
@@ -222,10 +227,8 @@ def get_samples(
 
 @ex.capture
 @typed
-def setup_model(
-    _run, model_config: dict, train_config: dict
-) -> tuple[nn.Module, torch.device]:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def setup_model(_run, model_config: dict, train_config: dict) -> tuple[nn.Module, str]:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Using device: {device}")
     model = Denoiser(
         N=model_config["seq_len"],
@@ -252,7 +255,7 @@ def get_dataset(
     diffusion_config: dict,
     generator_config: dict,
     inference: bool = False,
-    device: torch.device | None = None,
+    device: torch.device | str | None = None,
 ) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
     generator_class = globals()[generator_config["generator_class"]]
     generator = generator_class(**generator_config)
@@ -291,7 +294,7 @@ def train_batch(
         Float[TT, "seq_len"],  # timestep
     ],
     opt: torch.optim.Optimizer,
-    device: torch.device,
+    device: torch.device | str,
     train_config: dict,
 ) -> float:
     xt, signal_var, dsnr_dt, x0, snr, timestep = batch
@@ -334,7 +337,9 @@ def train_batch(
 
 @ex.capture
 @typed
-def save_model(model: nn.Module, train_config: dict, device: torch.device) -> None:
+def save_model(
+    model: nn.Module, train_config: dict, device: torch.device | str
+) -> None:
     model_path = train_config["output_path"]
     model.cpu()
     torch.save(model.state_dict(), model_path)

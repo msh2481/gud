@@ -154,7 +154,7 @@ class Schedule:
         is_single_time = times.ndim == 0
         if is_single_time:
             times = times.unsqueeze(0)
-
+        times = times.to(self.w.device)
         # progress = self.raw_progress(times)
         # is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
         # common = is_denoising * 2 * (self.N - 1 + self.w) / self.w
