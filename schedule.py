@@ -163,6 +163,7 @@ class Schedule:
         # result = (common * torch.where(progress < 0.5, exponential, linear)).abs()
 
         eps = torch.minimum((0.5 - torch.abs(times - 0.5)) / 2, torch.tensor(1e-6))
+        eps = eps.to(self.w.device)
         snr_minus = self.snr(times - eps)
         snr_plus = self.snr(times + eps)
         result = -((snr_plus - snr_minus) / (2 * eps))
