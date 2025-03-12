@@ -13,6 +13,7 @@ from jaxtyping import Float, Int
 from loguru import logger
 from matplotlib import pyplot as plt
 from neptune.integrations.sacred import NeptuneObserver
+from neptune.types import File
 from numpy import ndarray as ND
 from rich.progress import track
 from sacred import Experiment
@@ -40,12 +41,12 @@ def config():
     length = 20
 
     # Model configuration
-    # TODO: add 16 heads and 4 layers, eval_samples = 100, eval_every = 90
+    # TODO: return eval_samples = 100
     model_config = {
         "seq_len": length,
         "d_model": 64,
-        "n_heads": 4,
-        "n_layers": 2,
+        "n_heads": 16,
+        "n_layers": 4,
         "dropout": 0.0,
         "use_causal_mask": False,
         "mlp": False,
@@ -58,7 +59,7 @@ def config():
         "batch_size": 8,
         "dataset_size": 2000,
         "lr": 2e-3,
-        "eval_every": 10,
+        "eval_every": 50,
         "eval_samples": 9,
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
         "lr_warmup_epochs": 10,
@@ -524,6 +525,7 @@ def show_mnist_samples(
     final_losses: Float[TT, "batch"],
     n_samples: int,
     epoch_number: int | None = None,
+    mid_samples: Float[TT, "batch seq_len"] | None = None,
 ):
     # Convert final_samples to numpy and reshape to 10x10 images
     # Then use torchvision.utils.make_grid to create a grid of the images
@@ -531,9 +533,27 @@ def show_mnist_samples(
     # Save the grid to a file
     images = final_samples[:9].reshape(-1, 1, 10, 10)
     grid = make_grid(images, nrow=3)
+    plt.figure(figsize=(8, 8))
     plt.imshow(grid.permute(1, 2, 0))
+    plt.title("Final Samples")
     plt.savefig("samples.png", dpi=300)
     plt.close()
+
+    # Upload to Neptune
+    run["samples"].append(File("samples.png"))
+
+    # If mid_samples are provided, create a similar visualization
+    if mid_samples is not None:
+        mid_images = mid_samples[:9].reshape(-1, 1, 10, 10)
+        mid_grid = make_grid(mid_images, nrow=3)
+        plt.figure(figsize=(8, 8))
+        plt.imshow(mid_grid.permute(1, 2, 0))
+        plt.title("Half-Denoised Samples")
+        plt.savefig("partial_samples.png", dpi=300)
+        plt.close()
+
+        # Upload to Neptune
+        run["partial_samples"].append(File("partial_samples.png"))
 
 
 @ex.capture
@@ -587,8 +607,15 @@ def evaluate(
         # Save distribution of final samples
         final_samples = samples[:, -1, :]  # [n_samples, seq_len]
         final_losses = generator.loss(final_samples)
+
+        # Get mid-denoised samples (from middle step)
+        mid_step = n_steps // 2
+        mid_samples = samples[:, mid_step, :]  # [n_samples, seq_len]
+
         # show_1d_samples(final_samples, final_losses, n_samples, epoch_number)
-        show_mnist_samples(final_samples, final_losses, n_samples, epoch_number)
+        show_mnist_samples(
+            final_samples, final_losses, n_samples, epoch_number, mid_samples
+        )
 
         return final_samples, final_losses
 

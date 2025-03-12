@@ -100,7 +100,8 @@ def run(
 name = "mnist-1"
 
 run(
-    kind="D",
+    kind="UD",
+    window=10,
     direction="forward",
     generator_class="MNIST",
     sampling_steps=784,
