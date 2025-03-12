@@ -386,14 +386,15 @@ class MNIST(DataGenerator):
     def losses_per_clause(
         self, x: Float[TT, "batch seq_len"]
     ) -> Float[TT, "batch n_clauses"]:
-        prefix = 100
-        batch_size = x.shape[0]
-        reference_data = torch.stack([self.mnist_data[i][0] for i in range(prefix)])
-        # Compute distances between each input and all reference samples
-        distances = (x.unsqueeze(1) - reference_data.unsqueeze(0)).square().sum(dim=2)
-        # Get minimum distance for each sample in the batch
-        min_distances = distances.min(dim=1, keepdim=True).values
-        return min_distances
+        return torch.zeros((x.shape[0], 1))
+        # prefix = 100
+        # batch_size = x.shape[0]
+        # reference_data = torch.stack([self.mnist_data[i][0] for i in range(prefix)])
+        # # Compute distances between each input and all reference samples
+        # distances = (x.unsqueeze(1) - reference_data.unsqueeze(0)).square().sum(dim=2)
+        # # Get minimum distance for each sample in the batch
+        # min_distances = distances.min(dim=1, keepdim=True).values
+        # return min_distances
 
     @typed
     def sample(

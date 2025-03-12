@@ -613,10 +613,10 @@ def evaluate(
                 losses.dtype == torch.float64
             ), f"losses should be float64, got {losses.dtype}"
 
-            q25 = losses.quantile(0.25).item()
-            q50 = losses.quantile(0.50).item()
-            q75 = losses.quantile(0.75).item()
             if step == 0 or step == n_steps - 1 or step == n_steps // 2:
+                q25 = losses.quantile(0.25).item()
+                q50 = losses.quantile(0.50).item()
+                q75 = losses.quantile(0.75).item()
                 print(
                     f"Step {step}: {losses.mean():.3f} (q25={q25:.3f}, q50={q50:.3f}, q75={q75:.3f})"
                 )
@@ -625,12 +625,12 @@ def evaluate(
         _run.log_scalar("q75", q75, epoch_number)
 
         # Save distribution of final samples
-        final_samples = samples[:, -1, :]  # [n_samples, seq_len]
+        final_samples = samples[:, -1, :].cpu()  # [n_samples, seq_len]
         final_losses = generator.loss(final_samples)
 
         # Get mid-denoised samples (from middle step)
         mid_step = n_steps // 2
-        mid_samples = samples[:, mid_step, :]  # [n_samples, seq_len]
+        mid_samples = samples[:, mid_step, :].cpu()  # [n_samples, seq_len]
 
         # show_1d_samples(final_samples, final_losses, n_samples, epoch_number)
         show_mnist_samples(
