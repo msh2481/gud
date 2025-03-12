@@ -56,7 +56,7 @@ def config():
     train_config = {
         "output_path": "denoiser.pt",
         "epochs": 500,
-        "batch_size": 8,
+        "batch_size": 32,
         "dataset_size": 2000,
         "lr": 2e-3,
         "eval_every": 50,
