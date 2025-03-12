@@ -252,6 +252,7 @@ def get_dataset(
     diffusion_config: dict,
     generator_config: dict,
     inference: bool = False,
+    device: torch.device | None = None,
 ) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
     generator_class = globals()[generator_config["generator_class"]]
     generator = generator_class(**generator_config)
@@ -260,10 +261,15 @@ def get_dataset(
     # generator.append_to_save()
     clean_data = generator.data[: train_config["dataset_size"]]
     w = torch.tensor(diffusion_config["window"], dtype=torch.float64)
+    if device is not None:
+        w = w.to(device)
+        clean_data = clean_data.to(device)
     schedule = Schedule(
         N=model_config["seq_len"],
         w=w,
     )
+    if device is not None:
+        schedule = schedule.to(device)
     visualize_schedule(schedule)
     dataset = DiffusionDataset(clean_data, schedule)
     train_loader = DataLoader(
@@ -339,7 +345,9 @@ def save_model(model: nn.Module, train_config: dict, device: torch.device) -> No
 def train_denoiser(_run, model_config, train_config, diffusion_config):
     """Train the denoising model"""
     model, device = setup_model()
-    _generator, _clean_data, _schedule, train_loader = get_dataset(inference=False)
+    _generator, _clean_data, _schedule, train_loader = get_dataset(
+        inference=False, device=device
+    )
     opt = torch.optim.Adam(
         model.parameters(),
         lr=train_config["lr"],  # betas=(0.95, 0.999)
@@ -456,7 +464,9 @@ def animated_sample(
 ):
     """Sample from a trained model"""
     model, device = load_model(model_path=model_path)
-    generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
+    generator, clean_data, schedule, _train_loader = get_dataset(
+        inference=True, device=device
+    )
 
     # Assert that tensors are float64
     assert (
@@ -568,7 +578,9 @@ def evaluate(
     """Evaluate the model"""
     n_samples = train_config["eval_samples"]
     model, device = load_model(model_path=model_path)
-    generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
+    generator, clean_data, schedule, _train_loader = get_dataset(
+        inference=True, device=device
+    )
 
     # Assert that tensors are float64
     assert (
@@ -577,7 +589,9 @@ def evaluate(
 
     schedule = schedule.to(device)
     with torch.no_grad():
-        x_1 = torch.randn((n_samples, model_config["seq_len"]), dtype=torch.float64)
+        x_1 = torch.randn(
+            (n_samples, model_config["seq_len"]), dtype=torch.float64, device=device
+        )
         assert x_1.dtype == torch.float64, f"xt should be float64, got {x_1.dtype}"
 
         samples = get_samples(model, x_1, schedule)
@@ -638,7 +652,9 @@ def sample_distribution(
     3. Creates a histogram of the first element values across all samples
     """
     model, device = load_model(model_path=model_path)
-    generator, clean_data, schedule, _train_loader = get_dataset(inference=True)
+    generator, clean_data, schedule, _train_loader = get_dataset(
+        inference=True, device=device
+    )
 
     # Assert that tensors are float64
     assert (
@@ -649,7 +665,9 @@ def sample_distribution(
 
     # Generate samples
     with torch.no_grad():
-        xt = torch.randn((n_samples, model_config["seq_len"]), dtype=torch.float64)
+        xt = torch.randn(
+            (n_samples, model_config["seq_len"]), dtype=torch.float64, device=device
+        )
         assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
 
         samples = get_samples(model, xt, schedule)

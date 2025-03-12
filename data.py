@@ -74,6 +74,9 @@ class DataGenerator:
 
     @typed
     def loss(self, x: Float[TT, "batch seq_len"]) -> Float[TT, "batch"]:
+        # Ensure x is on the same device as self.data
+        if len(self.data) > 0 and x.device != self.data.device:
+            x = x.to(self.data.device)
         return self.losses_per_clause(x).sum(dim=-1)
 
     @typed
