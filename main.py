@@ -31,7 +31,8 @@ torch.set_default_dtype(torch.float64)
 
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
-# ex.observers.append(MongoObserver(db_name="sacred"))
+mongo_url = 'mongodb://0.tcp.ngrok.io:10368/sacred'
+ex.observers.append(MongoObserver.create(url=mongo_url))
 ex.observers.append(NeptuneObserver(run=run))
 
 
@@ -55,8 +56,8 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 500,
-        "batch_size": 32,
+        "epochs": 1000,
+        "batch_size": 16,
         "dataset_size": 2000,
         "lr": 2e-3,
         "eval_every": 50,
@@ -64,7 +65,7 @@ def config():
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
         "lr_warmup_epochs": 10,
         "lr_min_factor": 0.01,
-        "lr_step_size": 15,  # For step schedule: epochs per step
+        "lr_step_size": 30,  # For step schedule: epochs per step
         "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
         "loss_type": "mask_dsnr",  # Options: "simple", "vlb", "mask_dsnr"
     }
