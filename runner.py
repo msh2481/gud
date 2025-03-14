@@ -1,3 +1,4 @@
+import os
 import random
 import uuid
 from pprint import pprint
@@ -89,12 +90,16 @@ def run(
         loss_type=loss_type,
         generator_class=generator_class,
     )
-    ex.run(
-        config_updates=config_updates,
-        meta_info={
-            "comment": f"k={kind} d={direction} w={window} step={step} l={loss_type} | {comment}"
-        },
-    )
+    updates_str = "\n".join([f"{k}={repr(v)}" for k, v in config_updates.items()])
+    cli_command = f'python main.py with "{updates_str}"\n-c "{comment}"'
+    logger.info(f"Running: {cli_command}")
+    os.system(cli_command)
+    # ex.run(
+    #     config_updates=config_updates,
+    #     meta_info={
+    #         "comment": f"k={kind} d={direction} w={window} step={step} l={loss_type} | {comment}"
+    #     },
+    # )
 
 
 name = "mnist-1"

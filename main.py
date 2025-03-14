@@ -31,7 +31,7 @@ torch.set_default_dtype(torch.float64)
 
 # Initialize Sacred experiment
 ex = Experiment("denoising_diffusion")
-mongo_url = 'mongodb://0.tcp.ngrok.io:10368/sacred'
+mongo_url = "mongodb://0.tcp.ngrok.io:10368/sacred"
 ex.observers.append(MongoObserver.create(url=mongo_url))
 ex.observers.append(NeptuneObserver(run=run))
 
