@@ -90,8 +90,9 @@ def run(
         loss_type=loss_type,
         generator_class=generator_class,
     )
-    updates_str = "\n".join([f"{k}={repr(v)}" for k, v in config_updates.items()])
-    cli_command = f'python main.py with "{updates_str}"\n-c "{comment}"'
+    updates_items = [f"{k}={repr(v)}" for k, v in config_updates.items()]
+    updates_str = " ".join([repr(item) for item in updates_items])
+    cli_command = f"python main.py with {updates_str} -c '{comment}'"
     logger.info(f"Running: {cli_command}")
     os.system(cli_command)
     # ex.run(
@@ -114,6 +115,8 @@ for rep in range(10):
             sampling_steps=784,
             comment=f"{name}",
         )
+        break
+    break
 
 # for rep in range(10):
 #     for step in [1, 2, 4, 8, 12]:
