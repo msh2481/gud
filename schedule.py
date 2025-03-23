@@ -90,35 +90,12 @@ class Schedule:
             times = times.unsqueeze(0)
 
         progress = self.raw_progress(times).clamp(0, 1)
-        base = torch.tensor(10)
-        # a = -1.774113580011895
-        # b = -0.22276306695937126
-        # snr = torch.pow(base, -2.0 * progress**2) * self.snr_0
         snr = (
             self.snr_0.log() + progress * (self.snr_1.log() - self.snr_0.log())
         ).exp()
         if is_single_time:
             snr = snr.squeeze(0)
-
         return snr
-
-        # is_single_time = times.ndim == 0
-        # if is_single_time:
-        #     times = times.unsqueeze(0)
-
-        # progress = self.raw_progress(times).clamp(0, 1)
-        # exponential = (
-        #     self.snr_0.log() + 2 * progress * (self.snr_mid.log() - self.snr_0.log())
-        # ).exp()
-        # linear = self.snr_mid + 2 * (progress - 0.5) * (self.snr_1 - self.snr_mid)
-        # result = torch.where(progress < 0.5, exponential, linear)
-
-        # if is_single_time:
-        #     result = result.squeeze(0)
-
-        # return result
-        var = self.signal_var(times)
-        return var / (1 - var)
 
     @typed
     def signal_var(
@@ -126,20 +103,6 @@ class Schedule:
     ) -> Float[TT, "T N"] | Float[TT, "N"]:
         snr = self.snr(times)
         return snr / (snr + 1)
-
-        is_single_time = times.ndim == 0
-        if is_single_time:
-            times = times.unsqueeze(0)
-
-        progress = self.raw_progress(times).clamp(0, 1)
-        base = torch.tensor(10)
-        # a = -1.774113580011895
-        # b = -0.22276306695937126
-        var = torch.pow(base, -2.0 * progress**3) * (self.snr_0 / (1 + self.snr_0))
-        if is_single_time:
-            var = var.squeeze(0)
-
-        return var
 
     @typed
     def log_snr(
@@ -155,12 +118,6 @@ class Schedule:
         if is_single_time:
             times = times.unsqueeze(0)
         times = times.to(self.w.device)
-        # progress = self.raw_progress(times)
-        # is_denoising = ((0 <= progress) & (progress <= 1)).to(dtype=torch.float64)
-        # common = is_denoising * 2 * (self.N - 1 + self.w) / self.w
-        # exponential = self.snr(times) * (self.snr_mid.log() - self.snr_0.log())
-        # linear = self.snr_1 - self.snr_mid
-        # result = (common * torch.where(progress < 0.5, exponential, linear)).abs()
 
         eps = torch.minimum((0.5 - torch.abs(times - 0.5)) / 2, torch.tensor(1e-6))
         eps = eps.to(self.w.device)
@@ -172,6 +129,31 @@ class Schedule:
             result = result.squeeze(0)
 
         return result
+
+    def dsignal_var_dt(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        """
+        `sv = 1 - 1 / (snr + 1)`
+
+        `dsv_dt = dsnr_dt / (snr + 1) ** 2`
+        """
+        snr = self.snr(times)
+        dsnr_dt = self.dsnr_dt(times)
+        dsignal_var_dt = dsnr_dt / (snr + 1) ** 2
+        return dsignal_var_dt
+
+    def drift_term(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        signal_var = self.signal_var(times)
+        dsignal_var_dt = self.dsignal_var_dt(times)
+        return 0.5 * dsignal_var_dt / signal_var
+
+    def diffusion_term(
+        self, times: Float[TT, "T"] | Float[TT, ""]
+    ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        return -self.dsignal_var_dt(times)
 
     @typed
     def sample_time(self) -> Float[TT, ""]:

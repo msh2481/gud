@@ -174,6 +174,16 @@ class Denoiser(nn.Module):
             x = self.transformer(x)  # [batch, seq_len, d_model]
         return self.output_proj(x).squeeze(-1)
 
+    @typed
+    def get_score(
+        self,
+        noisy_seq: Float[TT, "batch seq_len"],
+        signal_var: Float[TT, "batch seq_len"],
+    ) -> Float[TT, "batch seq_len"]:
+        x0_hat = self(noisy_seq, signal_var)
+        diff = noisy_seq - signal_var.sqrt() * x0_hat
+        return -(1 / (1 - signal_var + 1e-10)) * diff
+
 
 @typed
 def backward_process(
@@ -223,6 +233,40 @@ def get_samples(
         t = ts[:, it + 1]
         mu, sigma = backward_process(model, schedule, p=p, t=t, x_t=x_t)
         xs[:, it] = mu + sigma.sqrt() * torch.randn_like(x_t)
+    return xs.flip(dims=[1])
+
+
+@typed
+@ex.capture
+def ode_sampling(
+    model: nn.Module,
+    x_1: Float[TT, "batch seq_len"],
+    schedule: Schedule,
+    diffusion_config: dict,
+) -> Float[TT, "batch n_steps seq_len"]:
+    """
+    ODE:
+    `dx/dt = f(t) * xt - 1/2 * g^2(t) * model.get_score(xt, t)`
+    where
+    `f(t) = schedule.drift_term(t)`
+    `g^2(t) = schedule.diffusion_term(t)`
+    """
+    device = x_1.device
+    n_steps = diffusion_config["sampling_steps"]
+    batch_size, seq_len = x_1.shape
+    xs = torch.zeros(batch_size, n_steps + 1, seq_len, device=device)
+    ts = torch.arange(n_steps + 1, device=device, dtype=torch.float64) / n_steps
+    ts = ts.repeat(batch_size, 1)
+    xs[:, n_steps] = x_1
+
+    for it in reversed(range(n_steps)):
+        x_t = xs[:, it + 1]
+        t = ts[:, it]
+        dt = ts[:, it + 1] - t
+        drift = schedule.drift_term(t)
+        diffusion = schedule.diffusion_term(t)
+        score = model.get_score(x_t, t)
+        xs[:, it] = x_t + dt * (drift * x_t - 0.5 * diffusion * score)
     return xs.flip(dims=[1])
 
 
