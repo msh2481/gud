@@ -39,9 +39,9 @@ $$
 So the continuous ELBO is:
 $$ 
 \begin{split}
-\mathcal{L} &= \frac{1}{2} \int_0^1 \left(\text{MSE in $x(0)$ space}\right) s'(t) d t \\
-&= \frac{1}{2} \int_0^1 \left(\text{MSE in $\varepsilon$ space}\right) (\log s(t))' d t \\
-&= \frac{1}{2} \int_0^1 \frac{\left(\text{MSE in $\varepsilon$ space}\right)}{s(t)} s'(t) d t \\
+\mathcal{L} &= -\frac{1}{2} \int_0^1 \left(\text{MSE in $x(0)$ space}\right) s'(t) d t \\
+&= -\frac{1}{2} \int_0^1 \left(\text{MSE in $\varepsilon$ space}\right) (\log s(t))' d t \\
+&= -\frac{1}{2} \int_0^1 \frac{\left(\text{MSE in $\varepsilon$ space}\right)}{s(t)} s'(t) d t \\
 \end{split}
 $$
 
