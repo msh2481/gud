@@ -471,35 +471,61 @@ def create_animation(
     generator: DataGenerator,
     model_config: dict,
     diffusion_config: dict,
+    show_mnist: bool = True,
 ) -> None:
-    fig = plt.figure(figsize=(15, 5))
-    ax = plt.gca()
     n_steps = diffusion_config["sampling_steps"]
 
-    def update(frame):
-        ax.clear()
-        # colors = plt.cm.jet(np.linspace(0, 1, len(schedule.signal_var)))
-        for i in range(frame + 1):
-            alpha = 1.5 ** (i - frame)
-            ax.plot(samples[0, i].cpu(), color="blue", lw=0.5, alpha=alpha)
-        current = samples[:1, frame]
-        assert current.shape == (1, model_config["seq_len"])
-        losses = generator.losses_per_clause(current)[0].detach().cpu().numpy()
-        losses_str = " ".join(f"{loss:.3f}" for loss in losses)
-        ax.set_title(
-            f"Denoising Steps (Step {frame + 1}/{n_steps})" f"\nLosses: {losses_str}"
-        )
-        ax.axhline(y=0, color="black", lw=0.5)
-        ax.axhline(y=1, color="black", lw=0.5)
-        ax.set_ylim(-1, 2)
+    if show_mnist:
+        # Create animation for MNIST-like 2D data
+        fig = plt.figure(figsize=(8, 8))
 
-    anim = animation.FuncAnimation(
-        fig,
-        update,
-        frames=n_steps,
-        interval=40,
-        blit=False,
-    )
+        def update(frame):
+            plt.clf()
+            current = samples[: min(9, samples.shape[0]), frame]
+            # Reshape to 10x10 images if the sequence length is 100
+            images = current.reshape(-1, 1, 10, 10)
+            grid = make_grid(images, nrow=3)
+            plt.imshow(grid.permute(1, 2, 0))
+            plt.title(f"Denoising Steps (Step {frame + 1}/{n_steps})")
+            plt.axis("off")
+
+        anim = animation.FuncAnimation(
+            fig,
+            update,
+            frames=n_steps,
+            interval=50,
+            blit=False,
+        )
+    else:
+        # Original 1D animation code
+        fig = plt.figure(figsize=(15, 5))
+        ax = plt.gca()
+
+        def update(frame):
+            ax.clear()
+            for i in range(frame + 1):
+                alpha = 1.5 ** (i - frame)
+                ax.plot(samples[0, i].cpu(), color="blue", lw=0.5, alpha=alpha)
+            current = samples[:1, frame]
+            assert current.shape == (1, model_config["seq_len"])
+            losses = generator.losses_per_clause(current)[0].detach().cpu().numpy()
+            losses_str = " ".join(f"{loss:.3f}" for loss in losses)
+            ax.set_title(
+                f"Denoising Steps (Step {frame + 1}/{n_steps})"
+                f"\nLosses: {losses_str}"
+            )
+            ax.axhline(y=0, color="black", lw=0.5)
+            ax.axhline(y=1, color="black", lw=0.5)
+            ax.set_ylim(-1, 2)
+
+        anim = animation.FuncAnimation(
+            fig,
+            update,
+            frames=n_steps,
+            interval=40,
+            blit=False,
+        )
+
     anim.save(output_path, writer="pillow")
     plt.close()
     logger.info(f"Animation saved to {output_path}")
@@ -511,6 +537,7 @@ def animated_sample(
     diffusion_config: dict,
     train_config: dict,
     output_path: str = "denoising_animation.gif",
+    show_mnist: bool = True,
 ):
     """Sample from a trained model"""
     model, device = load_model(model_path=model_path)
@@ -540,7 +567,9 @@ def animated_sample(
         assert (
             samples.dtype == torch.float64
         ), f"samples should be float64, got {samples.dtype}"
-        create_animation(samples, schedule, output_path, generator)
+        create_animation(
+            samples, schedule, output_path, generator, show_mnist=show_mnist
+        )
 
 
 @typed
@@ -875,7 +904,7 @@ def setup_lr_scheduler(optimizer: torch.optim.Optimizer, train_config: dict) -> 
 
 @ex.automain
 def main():
-    train_denoiser()
-    # model_path = "models/b129c8c3-4b4d-41d9-bfe1-3a2b41f5ab97.pt"
-    # animated_sample(model_path=model_path)
+    # train_denoiser()
+    model_path = "models/accee7b7-d3cd-43f7-adaa-9f8fa4c5c118.pt"
+    animated_sample(model_path=model_path, show_mnist=True)
     # sample_distribution(model_path=model_path, n_samples=1000)
