@@ -103,20 +103,27 @@ def run(
     # )
 
 
-name = "mnist-1"
-
-for rep in range(10):
-    for w in [1, 10, 1000, 2, 5, 20, 50]:
-        run(
-            kind="UD",
-            window=w,
-            direction="forward",
-            generator_class="MNIST",
-            sampling_steps=784,
-            comment=f"{name}",
-        )
-        break
-    break
+name = "sampling-1"
+run(
+    kind="UD",
+    window=1000,
+    direction="forward",
+    generator_class="MNIST",
+    sampling_steps=784,
+    comment=f"{name}",
+)
+# for rep in range(10):
+#     for w in [1, 10, 1000, 2, 5, 20, 50]:
+#         run(
+#             kind="UD",
+#             window=w,
+#             direction="forward",
+#             generator_class="MNIST",
+#             sampling_steps=784,
+#             comment=f"{name}",
+#         )
+#         break
+#     break
 
 # for rep in range(10):
 #     for step in [1, 2, 4, 8, 12]:

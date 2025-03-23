@@ -239,7 +239,7 @@ def get_samples(
 @typed
 @ex.capture
 def ode_sampling(
-    model: nn.Module,
+    model: Denoiser,
     x_1: Float[TT, "batch seq_len"],
     schedule: Schedule,
     diffusion_config: dict,
@@ -263,10 +263,10 @@ def ode_sampling(
         x_t = xs[:, it + 1]
         t = ts[:, it]
         dt = ts[:, it + 1] - t
-        drift = schedule.drift_term(t)
-        diffusion = schedule.diffusion_term(t)
-        score = model.get_score(x_t, t)
-        xs[:, it] = x_t + dt * (drift * x_t - 0.5 * diffusion * score)
+        signal_var = schedule.signal_var(t)
+        beta = schedule.beta(t)
+        score = model.get_score(x_t, signal_var)
+        xs[:, it] = x_t - 0.5 * beta * dt * (x_t + score)
     return xs.flip(dims=[1])
 
 
@@ -538,6 +538,7 @@ def animated_sample(
     train_config: dict,
     output_path: str = "denoising_animation.gif",
     show_mnist: bool = True,
+    use_ode: bool = False,
 ):
     """Sample from a trained model"""
     model, device = load_model(model_path=model_path)
@@ -563,7 +564,10 @@ def animated_sample(
     assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
 
     with torch.no_grad():
-        samples = get_samples(model, xt, schedule)
+        if use_ode:
+            samples = ode_sampling(model, xt, schedule)
+        else:
+            samples = get_samples(model, xt, schedule)
         assert (
             samples.dtype == torch.float64
         ), f"samples should be float64, got {samples.dtype}"
@@ -906,5 +910,5 @@ def setup_lr_scheduler(optimizer: torch.optim.Optimizer, train_config: dict) -> 
 def main():
     # train_denoiser()
     model_path = "models/accee7b7-d3cd-43f7-adaa-9f8fa4c5c118.pt"
-    animated_sample(model_path=model_path, show_mnist=True)
+    animated_sample(model_path=model_path, show_mnist=True, use_ode=True)
     # sample_distribution(model_path=model_path, n_samples=1000)

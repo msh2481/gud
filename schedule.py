@@ -143,17 +143,12 @@ class Schedule:
         dsignal_var_dt = dsnr_dt / (snr + 1) ** 2
         return dsignal_var_dt
 
-    def drift_term(
+    def beta(
         self, times: Float[TT, "T"] | Float[TT, ""]
     ) -> Float[TT, "T N"] | Float[TT, "N"]:
         signal_var = self.signal_var(times)
         dsignal_var_dt = self.dsignal_var_dt(times)
-        return 0.5 * dsignal_var_dt / signal_var
-
-    def diffusion_term(
-        self, times: Float[TT, "T"] | Float[TT, ""]
-    ) -> Float[TT, "T N"] | Float[TT, "N"]:
-        return -self.dsignal_var_dt(times)
+        return -dsignal_var_dt / signal_var
 
     @typed
     def sample_time(self) -> Float[TT, ""]:
