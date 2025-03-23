@@ -237,13 +237,63 @@ def get_samples(
 
 
 @typed
+def velocity_field(
+    model: Denoiser,
+    schedule: Schedule,
+    x_t: Float[TT, "batch seq_len"],
+    t: Float[TT, "batch"],
+) -> Float[TT, "batch seq_len"]:
+    signal_var = schedule.signal_var(t)
+    assert not signal_var.isnan().any(), f"signal_var is nan"
+    beta = schedule.beta(t)
+    assert not beta.isnan().any(), f"beta is nan"
+    score = model.get_score(x_t, signal_var)
+    assert not score.isnan().any(), f"score is nan"
+    return -0.5 * beta * (x_t + score)
+
+
+@typed
+def hutchinson_trace(
+    model: Denoiser,
+    schedule: Schedule,
+    x_t: Float[TT, "batch seq_len"],
+    t: Float[TT, "batch"],
+) -> Float[TT, "batch"]:
+    batch_size, seq_len = x_t.shape
+    with torch.set_grad_enabled(True):
+        x_t.requires_grad_(True)
+        v = velocity_field(model, schedule, x_t, t)
+        # Spherial uniform random vector
+        z = torch.randn_like(x_t)
+        z /= z.norm(dim=1, keepdim=True)
+        # Compute vector-Jacobian product via autograd
+        vjp = torch.autograd.grad(
+            outputs=v,
+            inputs=x_t,
+            grad_outputs=z,
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+        )[0]
+        assert vjp.shape == (batch_size, seq_len)
+        # Hutchinson trace estimate
+        trace_estimate = (vjp * z).sum(dim=1)
+        assert trace_estimate.shape == (batch_size,)
+        return trace_estimate
+
+
+@typed
 @ex.capture
 def ode_sampling(
     model: Denoiser,
     x_1: Float[TT, "batch seq_len"],
     schedule: Schedule,
     diffusion_config: dict,
-) -> Float[TT, "batch n_steps seq_len"]:
+    compute_likelihood: bool = True,
+) -> (
+    tuple[Float[TT, "batch n_steps seq_len"], Float[TT, "batch"]]
+    | Float[TT, "batch n_steps seq_len"]
+):
     """
     ODE:
     `dx/dt = f(t) * xt - 1/2 * g^2(t) * model.get_score(xt, t)`
@@ -258,16 +308,32 @@ def ode_sampling(
     ts = torch.arange(n_steps + 1, device=device, dtype=torch.float64) / n_steps
     ts = ts.repeat(batch_size, 1)
     xs[:, n_steps] = x_1
+    # start with log PDF of multivariate standard normal at x_1
+    likelihood = torch.tensor(
+        -0.5 * (seq_len * torch.log(torch.tensor(2 * torch.pi)) + (x_1**2).sum(dim=1)),
+        device=device,
+        dtype=torch.float64,
+    )
 
     for it in reversed(range(n_steps)):
         x_t = xs[:, it + 1]
         t = ts[:, it]
         dt = ts[:, it + 1] - t
-        signal_var = schedule.signal_var(t)
-        beta = schedule.beta(t)
-        score = model.get_score(x_t, signal_var)
-        xs[:, it] = x_t - 0.5 * beta * dt * (x_t + score)
-    return xs.flip(dims=[1])
+        v = velocity_field(model, schedule, x_t, t)
+        xs[:, it] = x_t + v * dt
+        if compute_likelihood:
+            trace = hutchinson_trace(model, schedule, x_t, t)
+            addition = trace * dt
+            print(f"{it}: {addition.mean():.6f}")
+            if not addition.isnan().any():
+                likelihood += addition
+            else:
+                logger.warning(f"likelihood is nan at {it}")
+    if compute_likelihood:
+        print(f"likelihood: {likelihood.mean():.6f}")
+        return xs.flip(dims=[1]), likelihood
+    else:
+        return xs.flip(dims=[1])
 
 
 @ex.capture
@@ -565,7 +631,7 @@ def animated_sample(
 
     with torch.no_grad():
         if use_ode:
-            samples = ode_sampling(model, xt, schedule)
+            samples, _likelihood = ode_sampling(model, xt, schedule)
         else:
             samples = get_samples(model, xt, schedule)
         assert (

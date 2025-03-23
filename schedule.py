@@ -117,8 +117,7 @@ class Schedule:
         is_single_time = times.ndim == 0
         if is_single_time:
             times = times.unsqueeze(0)
-        times = times.to(self.w.device)
-
+        times = times.to(self.w.device) + 1e-6
         eps = torch.minimum((0.5 - torch.abs(times - 0.5)) / 2, torch.tensor(1e-6))
         eps = eps.to(self.w.device)
         snr_minus = self.snr(times - eps)
@@ -148,7 +147,7 @@ class Schedule:
     ) -> Float[TT, "T N"] | Float[TT, "N"]:
         signal_var = self.signal_var(times)
         dsignal_var_dt = self.dsignal_var_dt(times)
-        return -dsignal_var_dt / signal_var
+        return -dsignal_var_dt / (signal_var + 1e-8)
 
     @typed
     def sample_time(self) -> Float[TT, ""]:
