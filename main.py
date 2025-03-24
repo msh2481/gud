@@ -599,7 +599,7 @@ def create_animation(
     generator: DataGenerator,
     model_config: dict,
     diffusion_config: dict,
-    show_mnist: bool = True,
+    show_mnist: bool = False,
 ) -> None:
     n_steps = diffusion_config["sampling_steps"]
 
@@ -665,7 +665,7 @@ def animated_sample(
     diffusion_config: dict,
     train_config: dict,
     output_path: str = "denoising_animation.gif",
-    show_mnist: bool = True,
+    show_mnist: bool = False,
     use_ode: bool = False,
     use_ema: bool = True,
 ):
@@ -743,6 +743,7 @@ def show_1d_samples(
     plt.tight_layout()
     plt.savefig("samples.png", dpi=300)
     plt.close()
+    run["samples"].append(File("samples.png"))
 
 
 @typed
@@ -790,6 +791,7 @@ def evaluate(
     model_path: str = "denoiser.pt",
     epoch_number: int | None = None,
     use_ema: bool = False,
+    show_mnist: bool = False,
 ):
     """Evaluate the model"""
     n_samples = train_config["eval_samples"]
@@ -867,10 +869,12 @@ def evaluate(
         mid_step = n_steps // 2
         mid_samples = samples[:, mid_step, :].cpu()  # [n_samples, seq_len]
 
-        # show_1d_samples(final_samples, final_losses, n_samples, epoch_number)
-        show_mnist_samples(
-            final_samples, final_losses, n_samples, epoch_number, mid_samples
-        )
+        if show_mnist:
+            show_mnist_samples(
+                final_samples, final_losses, n_samples, epoch_number, mid_samples
+            )
+        else:
+            show_1d_samples(final_samples, final_losses, n_samples, epoch_number)
 
         return final_samples, final_losses
 
