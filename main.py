@@ -350,8 +350,9 @@ def ode_sampling(
     ts = ts.repeat(batch_size, 1)
     xs[:, n_steps] = x_1
     # start with log PDF of multivariate standard normal at x_1
-    likelihood = torch.tensor(
-        -0.5 * (seq_len * torch.log(torch.tensor(2 * torch.pi)) + (x_1**2).sum(dim=1)),
+    likelihood = (
+        -0.5 * (seq_len * torch.log(torch.tensor(2 * torch.pi)) + (x_1**2).sum(dim=1))
+    ).to(
         device=device,
         dtype=torch.float64,
     )
@@ -361,7 +362,7 @@ def ode_sampling(
         t = ts[:, it]
         dt = ts[:, it + 1] - t
         v = velocity_field(model, schedule, x_t, t)
-        xs[:, it] = x_t + v * dt
+        xs[:, it] = x_t + v * dt[:, None]
         if compute_likelihood:
             trace = hutchinson_trace(model, schedule, x_t, t)
             addition = trace * dt
@@ -554,9 +555,9 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         # Save model & evaluate
         # TODO: return +1
         if (epoch + 0) % train_config["eval_every"] == 0:
-            save_model(model=model, device=device)
             # Use EMA model for evaluation
             ema.apply_shadow()
+            save_model(model=model, device=device, is_ema=True)
             evaluate(
                 model_path=train_config["output_path"], epoch_number=epoch, use_ema=True
             )

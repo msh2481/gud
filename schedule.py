@@ -64,6 +64,7 @@ class Schedule:
     def raw_progress(
         self, times: Float[TT, "T"] | Float[TT, ""]
     ) -> Float[TT, "T N"] | Float[TT, "N"]:
+        orig_shape = times.shape
         is_single_time = times.ndim == 0
         if is_single_time:
             times = times.unsqueeze(0)
@@ -78,7 +79,10 @@ class Schedule:
 
         if is_single_time:
             result = result.squeeze(0)
-
+        assert result.shape == (
+            *orig_shape,
+            self.N,
+        ), f"result.shape = {result.shape} != {(*orig_shape, self.N)}"
         return result
 
     @typed
@@ -122,7 +126,7 @@ class Schedule:
         eps = eps.to(self.w.device)
         snr_minus = self.snr(times - eps)
         snr_plus = self.snr(times + eps)
-        result = -((snr_plus - snr_minus) / (2 * eps))
+        result = -((snr_plus - snr_minus) / (2 * eps[:, None]))
 
         if is_single_time:
             result = result.squeeze(0)
