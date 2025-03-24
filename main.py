@@ -100,7 +100,7 @@ def config():
         "batch_size": 16,
         "dataset_size": 2000,
         "lr": 2e-3,
-        "eval_every": 50,
+        "eval_every": 10,
         "eval_samples": 9,
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
         "lr_warmup_epochs": 10,
@@ -366,13 +366,14 @@ def ode_sampling(
         if compute_likelihood:
             trace = hutchinson_trace(model, schedule, x_t, t)
             addition = trace * dt
-            print(f"{it}: {addition.mean():.6f}")
+            if it % 20 == 0:
+                logger.debug(f"{it}: {addition.mean():.6f}")
             if not addition.isnan().any():
                 likelihood += addition
             else:
                 logger.warning(f"likelihood is nan at {it}")
     if compute_likelihood:
-        print(f"likelihood: {likelihood.mean():.6f}")
+        logger.info(f"likelihood: {likelihood.mean():.6f}")
         return xs.flip(dims=[1]), likelihood
     else:
         return xs.flip(dims=[1])
@@ -817,24 +818,22 @@ def evaluate(
         )
         assert x_1.dtype == torch.float64, f"xt should be float64, got {x_1.dtype}"
 
-        samples, likelihood = ode_sampling(
+        samples, loglikelihood = ode_sampling(
             model, x_1, schedule, compute_likelihood=True
         )
-
-        # Log the likelihoods for tracking
-        mean_likelihood = likelihood.mean().item()
-        median_likelihood = likelihood.median().item()
-        q25_likelihood = likelihood.quantile(0.25).item()
-        q75_likelihood = likelihood.quantile(0.75).item()
-
+        nll = -loglikelihood
+        mean_nll = nll.mean().item()
+        median_nll = nll.median().item()
+        q25_nll = nll.quantile(0.25).item()
+        q75_nll = nll.quantile(0.75).item()
         if epoch_number is not None:
-            _run.log_scalar("likelihood_mean", mean_likelihood, epoch_number)
-            _run.log_scalar("likelihood_median", median_likelihood, epoch_number)
-            _run.log_scalar("likelihood_q25", q25_likelihood, epoch_number)
-            _run.log_scalar("likelihood_q75", q75_likelihood, epoch_number)
+            _run.log_scalar("NLL_mean", mean_nll, epoch_number)
+            _run.log_scalar("NLL_median", median_nll, epoch_number)
+            _run.log_scalar("NLL_q25", q25_nll, epoch_number)
+            _run.log_scalar("NLL_q75", q75_nll, epoch_number)
 
         logger.info(
-            f"Likelihood stats: mean={mean_likelihood:.3f}, median={median_likelihood:.3f}, q25={q25_likelihood:.3f}, q75={q75_likelihood:.3f}"
+            f"NLL stats: mean={mean_nll:.3f}, median={median_nll:.3f}, q25={q25_nll:.3f}, q75={q75_nll:.3f}"
         )
 
         assert (

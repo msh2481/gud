@@ -45,15 +45,15 @@ def get_config(
         block_permutation = np.random.permutation(step)
         # ensure that number of inversions is about half
         while True:
-            inversions = np.sum(
-                np.triu(
-                    np.outer(block_permutation, block_permutation) > np.arange(step)
-                )
+            inversions = sum(
+                (block_permutation[i] > block_permutation[j])
+                for i in range(step)
+                for j in range(i + 1, step)
             )
-            print(f"Inversions: {inversions}")
-            max_inv = step * (step - 1) / 2
+            max_inv = step * (step - 1) // 2
             l = int(np.ceil(0.4 * max_inv))
             r = max(l + 1, int(0.6 * max_inv))
+            print(f"Inversions: {inversions} (l={l}, r={r}, max_inv={max_inv})")
             if l <= inversions <= r:
                 break
             block_permutation = np.random.permutation(step)
@@ -139,7 +139,7 @@ name = "block_shuffle-1"
 run(
     kind="UD",
     direction="block_shuffle",
-    step=3,
+    step=8,
     length=24,
     window=1000,
     sampling_steps=500,
