@@ -135,49 +135,38 @@ def run(
     # )
 
 
-name = "block_shuffle-1"
-run(
-    kind="UD",
-    direction="block_shuffle",
-    step=8,
-    length=24,
-    window=1000,
-    sampling_steps=500,
-    generator_class="LogisticMapPermutation",
-    comment=f"{name}",
-)
-# for rep in range(10):
-#     for w in [1, 10, 1000, 2, 5, 20, 50]:
-#         run(
-#             kind="UD",
-#             window=w,
-#             direction="forward",
-#             generator_class="MNIST",
-#             sampling_steps=784,
-#             comment=f"{name}",
-#         )
-#         break
-#     break
+name = "block_shuffle-2"
+# run(
+#     kind="UD",
+#     direction="block_shuffle",
+#     step=1,
+#     length=24,
+#     window=1000,
+#     sampling_steps=500,
+#     generator_class="LogisticMapPermutation",
+#     comment=f"{name}",
+# )
 
-# for rep in range(10):
-#     for step in [1, 2, 4, 8, 12]:
-#         run(kind="AR", direction="swaps", step=step, comment=f"{name} #{rep}")
-#         w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
-#             2,
-#             4,
-#             8,
-#             12,
-#             16,
-#             24,
-#             32,
-#             128,
-#         ]
-#         for w in sorted(list(set(w_candidates))):
-#             run(
-#                 kind="UD",
-#                 direction="swaps",
-#                 step=step,
-#                 window=w,
-#                 comment=f"{name} #{rep}",
-#             )
-#         run(kind="D", direction="swaps", step=step, comment=f"{name} #{rep}")
+for rep in range(10):
+    for step in [1, 2, 4, 8, 12]:
+        w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
+            2,
+            4,
+            8,
+            12,
+            16,
+            24,
+            32,
+            128,
+        ]
+        for w in sorted(list(set(w_candidates))):
+            run(
+                kind="UD",
+                direction="block_shuffle",
+                step=step,
+                length=24,
+                window=w,
+                sampling_steps=500,
+                generator_class="LogisticMapPermutation",
+                comment=f"{name} #{rep}",
+            )

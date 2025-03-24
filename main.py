@@ -24,6 +24,84 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.utils import make_grid
 
 
+run = neptune.init_run(
+    project="mlxa/GUD",
+    api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI5NTIzY2UxZC1jMjI5LTRlYTQtYjQ0Yi1kM2JhMGU1NDllYTIifQ==",
+)
+torch.set_default_dtype(torch.float64)
+
+# Initialize Sacred experiment
+ex = Experiment("denoising_diffusion")
+mongo_url = "mongodb://0.tcp.ngrok.io:10368/sacred"
+ex.observers.append(MongoObserver.create(url=mongo_url))
+ex.observers.append(NeptuneObserver(run=run))
+
+
+@ex.config
+def config():
+    tags = ["gud"]
+    length = 20
+
+    # Model configuration
+    model_config = {
+        "seq_len": length,
+        "d_model": 64,
+        "n_heads": 16,
+        "n_layers": 4,
+        "dropout": 0.0,
+        "use_causal_mask": False,
+        "mlp": False,
+    }
+
+    # Training configuration
+    train_config = {
+        "output_path": "denoiser.pt",
+        "epochs": 1000,
+        "batch_size": 16,
+        "dataset_size": 2000,
+        "lr": 2e-3,
+        "eval_every": 10,
+        "eval_samples": 100,
+        "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
+        "lr_warmup_epochs": 10,
+        "lr_min_factor": 0.01,
+        "lr_step_size": 30,  # For step schedule: epochs per step
+        "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
+        "loss_type": "mask_dsnr",  # Options: "simple", "vlb", "mask_dsnr"
+        "ema_decay": 0.999,
+    }
+
+    # Diffusion configuration
+    diffusion_config = {
+        "window": 1,
+        "sampling_steps": 1000,
+    }
+
+    generator_config = {
+        "generator_class": "LogisticMapPermutation",
+        "length": length,
+        "tolerance": 1e-3,
+        "permutation": list(range(length)),
+    }
+
+
+@typed
+def combine_gaussians(
+    mu_prior: Float[TT, "..."],
+    sigma_prior: Float[TT, "..."],
+    mu_likelihood: Float[TT, "..."],
+    sigma_likelihood: Float[TT, "..."],
+) -> tuple[Float[TT, "..."], Float[TT, "..."]]:
+    precision_prior = 1.0 / sigma_prior
+    precision_likelihood = 1.0 / sigma_likelihood
+    precision_combined = precision_prior + precision_likelihood
+    sigma_combined = 1.0 / precision_combined
+    mu_combined = sigma_combined * (
+        precision_prior * mu_prior + precision_likelihood * mu_likelihood
+    )
+    return mu_combined, sigma_combined
+
+
 class EMA:
     @typed
     def __init__(self, model: nn.Module, decay: float = 0.999):
@@ -61,85 +139,6 @@ class EMA:
                 assert name in self.backup
                 param.data = self.backup[name]
         self.backup = {}
-
-
-run = neptune.init_run(
-    project="mlxa/GUD",
-    api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI5NTIzY2UxZC1jMjI5LTRlYTQtYjQ0Yi1kM2JhMGU1NDllYTIifQ==",
-)
-torch.set_default_dtype(torch.float64)
-
-# Initialize Sacred experiment
-ex = Experiment("denoising_diffusion")
-mongo_url = "mongodb://0.tcp.ngrok.io:10368/sacred"
-ex.observers.append(MongoObserver.create(url=mongo_url))
-ex.observers.append(NeptuneObserver(run=run))
-
-
-@ex.config
-def config():
-    tags = ["gud"]
-    length = 20
-
-    # Model configuration
-    # TODO: return eval_samples = 100
-    model_config = {
-        "seq_len": length,
-        "d_model": 64,
-        "n_heads": 16,
-        "n_layers": 4,
-        "dropout": 0.0,
-        "use_causal_mask": False,
-        "mlp": False,
-    }
-
-    # Training configuration
-    train_config = {
-        "output_path": "denoiser.pt",
-        "epochs": 1000,
-        "batch_size": 16,
-        "dataset_size": 2000,
-        "lr": 2e-3,
-        "eval_every": 10,
-        "eval_samples": 9,
-        "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
-        "lr_warmup_epochs": 10,
-        "lr_min_factor": 0.01,
-        "lr_step_size": 30,  # For step schedule: epochs per step
-        "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
-        "loss_type": "mask_dsnr",  # Options: "simple", "vlb", "mask_dsnr"
-        "ema_decay": 0.999,  # Exponential moving average decay
-    }
-
-    # Diffusion configuration
-    diffusion_config = {
-        "window": 1,
-        "sampling_steps": 1000,
-    }
-
-    generator_config = {
-        "generator_class": "LogisticMapPermutation",
-        "length": length,
-        "tolerance": 1e-3,
-        "permutation": list(range(length)),
-    }
-
-
-@typed
-def combine_gaussians(
-    mu_prior: Float[TT, "..."],
-    sigma_prior: Float[TT, "..."],
-    mu_likelihood: Float[TT, "..."],
-    sigma_likelihood: Float[TT, "..."],
-) -> tuple[Float[TT, "..."], Float[TT, "..."]]:
-    precision_prior = 1.0 / sigma_prior
-    precision_likelihood = 1.0 / sigma_likelihood
-    precision_combined = precision_prior + precision_likelihood
-    sigma_combined = 1.0 / precision_combined
-    mu_combined = sigma_combined * (
-        precision_prior * mu_prior + precision_likelihood * mu_likelihood
-    )
-    return mu_combined, sigma_combined
 
 
 class Denoiser(nn.Module):
@@ -554,8 +553,7 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         scheduler.step()
 
         # Save model & evaluate
-        # TODO: return +1
-        if (epoch + 0) % train_config["eval_every"] == 0:
+        if (epoch + 1) % train_config["eval_every"] == 0:
             # Use EMA model for evaluation
             ema.apply_shadow()
             save_model(model=model, device=device, is_ema=True)
