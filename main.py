@@ -23,6 +23,46 @@ from torch import nn, Tensor as TT
 from torch.utils.data import DataLoader, Dataset
 from torchvision.utils import make_grid
 
+
+class EMA:
+    @typed
+    def __init__(self, model: nn.Module, decay: float = 0.999):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        self.register()
+
+    def register(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+    @typed
+    def update(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                new_average = (
+                    self.decay * self.shadow[name] + (1.0 - self.decay) * param.data
+                )
+                self.shadow[name] = new_average.clone()
+
+    def apply_shadow(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                self.backup[name] = param.data
+                param.data = self.shadow[name]
+
+    def restore(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
+
+
 run = neptune.init_run(
     project="mlxa/GUD",
     api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiI5NTIzY2UxZC1jMjI5LTRlYTQtYjQ0Yi1kM2JhMGU1NDllYTIifQ==",
@@ -68,6 +108,7 @@ def config():
         "lr_step_size": 30,  # For step schedule: epochs per step
         "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
         "loss_type": "mask_dsnr",  # Options: "simple", "vlb", "mask_dsnr"
+        "ema_decay": 0.999,  # Exponential moving average decay
     }
 
     # Diffusion configuration
@@ -449,9 +490,15 @@ def train_batch(
 @ex.capture
 @typed
 def save_model(
-    model: nn.Module, train_config: dict, device: torch.device | str
+    model: nn.Module,
+    train_config: dict,
+    device: torch.device | str,
+    is_ema: bool = False,
 ) -> None:
     model_path = train_config["output_path"]
+    if is_ema:
+        # Save EMA model with different filename
+        model_path = model_path.replace(".pt", "_ema.pt")
     model.cpu()
     torch.save(model.state_dict(), model_path)
     model.to(device)
@@ -469,6 +516,9 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         lr=train_config["lr"],  # betas=(0.95, 0.999)
     )
 
+    # Initialize EMA model tracker
+    ema = EMA(model, decay=train_config["ema_decay"])
+
     scheduler = setup_lr_scheduler(optimizer=opt)
 
     losses = []
@@ -478,6 +528,8 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         for batch in train_loader:
             loss = train_batch(model=model, batch=tuple(batch), opt=opt, device=device)
             epoch_losses.append(loss)
+            # Update EMA parameters after each batch
+            ema.update()
 
         # Compute epoch & avg loss
         current_loss = np.mean(epoch_losses)
@@ -503,9 +555,18 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
         # TODO: return +1
         if (epoch + 0) % train_config["eval_every"] == 0:
             save_model(model=model, device=device)
-            evaluate(model_path=train_config["output_path"], epoch_number=epoch)
+            # Use EMA model for evaluation
+            ema.apply_shadow()
+            evaluate(
+                model_path=train_config["output_path"], epoch_number=epoch, use_ema=True
+            )
+            ema.restore()
 
+    # Save both the regular model and EMA model
     save_model(model=model, device=device)
+    ema.apply_shadow()
+    save_model(model=model, device=device, is_ema=True)
+    ema.restore()
 
 
 @ex.capture
@@ -605,8 +666,12 @@ def animated_sample(
     output_path: str = "denoising_animation.gif",
     show_mnist: bool = True,
     use_ode: bool = False,
+    use_ema: bool = True,
 ):
     """Sample from a trained model"""
+    if use_ema and not model_path.endswith("_ema.pt"):
+        model_path = model_path.replace(".pt", "_ema.pt")
+
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader = get_dataset(
         inference=True, device=device
@@ -723,9 +788,15 @@ def evaluate(
     train_config: dict,
     model_path: str = "denoiser.pt",
     epoch_number: int | None = None,
+    use_ema: bool = False,
 ):
     """Evaluate the model"""
     n_samples = train_config["eval_samples"]
+
+    # If evaluating with EMA model directly and not during training
+    if use_ema and not model_path.endswith("_ema.pt"):
+        model_path = model_path.replace(".pt", "_ema.pt")
+
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader = get_dataset(
         inference=True, device=device
@@ -743,7 +814,26 @@ def evaluate(
         )
         assert x_1.dtype == torch.float64, f"xt should be float64, got {x_1.dtype}"
 
-        samples = get_samples(model, x_1, schedule)
+        samples, likelihood = ode_sampling(
+            model, x_1, schedule, compute_likelihood=True
+        )
+
+        # Log the likelihoods for tracking
+        mean_likelihood = likelihood.mean().item()
+        median_likelihood = likelihood.median().item()
+        q25_likelihood = likelihood.quantile(0.25).item()
+        q75_likelihood = likelihood.quantile(0.75).item()
+
+        if epoch_number is not None:
+            _run.log_scalar("likelihood_mean", mean_likelihood, epoch_number)
+            _run.log_scalar("likelihood_median", median_likelihood, epoch_number)
+            _run.log_scalar("likelihood_q25", q25_likelihood, epoch_number)
+            _run.log_scalar("likelihood_q75", q75_likelihood, epoch_number)
+
+        logger.info(
+            f"Likelihood stats: mean={mean_likelihood:.3f}, median={median_likelihood:.3f}, q25={q25_likelihood:.3f}, q75={q75_likelihood:.3f}"
+        )
+
         assert (
             samples.dtype == torch.float64
         ), f"samples should be float64, got {samples.dtype}"
@@ -792,6 +882,7 @@ def sample_distribution(
     train_config: dict,
     model_config: dict,
     n_samples: int = 100,
+    use_ema: bool = True,
 ):
     """Generate multiple samples and visualize their distribution.
 
@@ -800,6 +891,9 @@ def sample_distribution(
     2. Plots all samples as line plots to visualize the distribution
     3. Creates a histogram of the first element values across all samples
     """
+    if use_ema and not model_path.endswith("_ema.pt"):
+        model_path = model_path.replace(".pt", "_ema.pt")
+
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader = get_dataset(
         inference=True, device=device
@@ -819,7 +913,19 @@ def sample_distribution(
         )
         assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
 
-        samples = get_samples(model, xt, schedule)
+        # Use ODE sampling with likelihood calculation
+        samples, likelihood = ode_sampling(model, xt, schedule, compute_likelihood=True)
+
+        # Log likelihood statistics
+        mean_likelihood = likelihood.mean().item()
+        median_likelihood = likelihood.median().item()
+        q25_likelihood = likelihood.quantile(0.25).item()
+        q75_likelihood = likelihood.quantile(0.75).item()
+
+        logger.info(
+            f"Distribution sample likelihood stats: mean={mean_likelihood:.3f}, median={median_likelihood:.3f}"
+        )
+
         assert (
             samples.dtype == torch.float64
         ), f"samples should be float64, got {samples.dtype}"
@@ -846,7 +952,8 @@ def sample_distribution(
         q50 = losses.quantile(0.50).item()
 
         ax1.set_title(
-            f"Distribution of {n_samples} Samples\nMean Loss: {mean_loss:.3f}, Median: {q50:.3f}"
+            f"Distribution of {n_samples} Samples\nMean Loss: {mean_loss:.3f}, Median: {q50:.3f}\n"
+            f"Mean Likelihood: {mean_likelihood:.3f}"
         )
         ax1.set_xlabel("Position")
         ax1.set_ylabel("Value")
@@ -974,7 +1081,4 @@ def setup_lr_scheduler(optimizer: torch.optim.Optimizer, train_config: dict) -> 
 
 @ex.automain
 def main():
-    # train_denoiser()
-    model_path = "models/accee7b7-d3cd-43f7-adaa-9f8fa4c5c118.pt"
-    animated_sample(model_path=model_path, show_mnist=True, use_ode=True)
-    # sample_distribution(model_path=model_path, n_samples=1000)
+    train_denoiser()
