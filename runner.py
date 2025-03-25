@@ -124,42 +124,18 @@ def run(
     )
     updates_items = [f"{k}={repr(v)}" for k, v in config_updates.items()]
     updates_str = " ".join([repr(item) for item in updates_items])
+    comment = f"w={window} step={step} l={loss_type} | {comment}"
     cli_command = f"python main.py with {updates_str} -c '{comment}'"
     logger.info(f"Running: {cli_command}")
     os.system(cli_command)
-    # ex.run(
-    #     config_updates=config_updates,
-    #     meta_info={
-    #         "comment": f"k={kind} d={direction} w={window} step={step} l={loss_type} | {comment}"
-    #     },
-    # )
 
 
-name = "block_shuffle-2"
-# run(
-#     kind="UD",
-#     direction="block_shuffle",
-#     step=1,
-#     length=24,
-#     window=1000,
-#     sampling_steps=500,
-#     generator_class="LogisticMapPermutation",
-#     comment=f"{name}",
-# )
+name = "block_shuffle-3"
 
 for rep in range(10):
     for step in [1, 2, 4, 8, 12]:
-        w_candidates = [step, step + 1, step + 2, step + 3, step + 4] + [
-            2,
-            4,
-            8,
-            12,
-            16,
-            24,
-            32,
-            128,
-        ]
-        for w in sorted(list(set(w_candidates))):
+        ws = [1, 2, 4, 8, 12, 16, 24, 32, 64, 128]
+        for w in ws:
             run(
                 kind="UD",
                 direction="block_shuffle",
