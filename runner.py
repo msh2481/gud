@@ -20,7 +20,11 @@ def get_config(
     length: int | None = None,
     loss_type: Literal["simple", "vlb", "mask_dsnr"] = "simple",
     generator_class: Literal[
-        "LogisticMapPermutation", "LogisticMapForward", "LogisticMapBackward", "MNIST"
+        "LogisticMapPermutation",
+        "LogisticMapForward",
+        "LogisticMapBackward",
+        "MNIST",
+        "Stochastic",
     ] = "LogisticMapPermutation",
 ):
     assert length is not None, "length must be provided"
@@ -107,7 +111,11 @@ def run(
     comment: str = "",
     loss_type: Literal["simple", "vlb", "mask_dsnr"] = "mask_dsnr",
     generator_class: Literal[
-        "LogisticMapPermutation", "LogisticMapForward", "LogisticMapBackward", "MNIST"
+        "LogisticMapPermutation",
+        "LogisticMapForward",
+        "LogisticMapBackward",
+        "MNIST",
+        "Stochastic",
     ] = "LogisticMapPermutation",
 ):
     assert sampling_steps is not None, "sampling_steps must be provided"
@@ -130,19 +138,19 @@ def run(
     os.system(cli_command)
 
 
-name = "block_shuffle-3"
+name = "stochastic-1"
 
 for rep in range(10):
-    for step in [1, 2, 4, 8, 12]:
+    for step in [1, 2, 4, 8, 12, 24, 48]:
         ws = [1, 2, 4, 8, 12, 16, 24, 32, 64, 128]
         for w in ws:
             run(
                 kind="UD",
                 direction="block_shuffle",
                 step=step,
-                length=24,
+                length=96,
                 window=w,
                 sampling_steps=500,
-                generator_class="LogisticMapPermutation",
+                generator_class="Stochastic",
                 comment=f"{name} #{rep}",
             )

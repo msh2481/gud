@@ -22,7 +22,6 @@ class DataGenerator:
     @typed
     def __init__(self, **params) -> None:
         assert "length" in params, "length is required"
-        assert "tolerance" in params, "tolerance is required"
         self.init_params = params
         self.data = torch.zeros(0, params["length"])
 
@@ -310,6 +309,56 @@ class LogisticMapPermutation(DataGenerator):
         return result
 
 
+class Stochastic(DataGenerator):
+    @typed
+    def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
+        return torch.rand((batch_size, self.init_params["length"]))
+
+    @typed
+    def losses_per_clause(
+        self, x: Float[TT, "batch seq_len"]
+    ) -> Float[TT, "batch n_clauses"]:
+        length = self.init_params["length"]
+        permutation = self.init_params["permutation"]
+        assert (
+            len(permutation) == length
+        ), "Permutation length must match sequence length"
+        assert sorted(permutation) == list(range(length)), "Invalid permutation"
+
+        results = torch.zeros(x.shape[0], length - 1)
+        # For each position (except first in permutation), compute loss based on its predecessor
+        for i in range(1, length):
+            curr_idx = permutation[i]  # Current position in permutation
+            prev_idx = permutation[i - 1]  # Previous position in permutation
+            diff = x[:, curr_idx] - x[:, prev_idx]
+            results[:, i - 1] = (
+                diff - diff.clip(torch.tensor(0.0), torch.tensor(1.0))
+            ).square()
+        return results
+
+    @typed
+    def sample(
+        self, batch_size: int, debug: bool = False
+    ) -> Float[TT, "batch seq_len"]:
+        length = self.init_params["length"]
+        permutation = self.init_params["permutation"]
+        result = torch.zeros((batch_size, length))
+
+        # Initialize first position in permutation with random values
+        first_pos = permutation[0]
+        result[:, first_pos] = torch.rand(batch_size)
+
+        # Generate remaining positions in permutation order
+        for i in range(1, length):
+            curr_idx = permutation[i]  # Position to generate
+            prev_idx = permutation[i - 1]  # Position to base it on
+            prev = result[:, prev_idx]
+            result[:, curr_idx] = prev + torch.rand_like(prev)
+
+        self.data = torch.cat([self.data, result], dim=0)
+        return result
+
+
 class OneMinusX(DataGenerator):
     @typed
     def random_init(self, batch_size: int) -> Float[TT, "batch seq_len"]:
@@ -553,5 +602,15 @@ class DiffusionDataset(Dataset):
         return len(self.data)
 
 
+def test_stochastic():
+    # generate some samples and print them
+    gen = Stochastic(length=4, permutation=[0, 1, 2, 3])
+    samples = gen.sample(batch_size=10)
+    for sample in samples:
+        plt.plot(sample.cpu().numpy())
+    plt.show()
+    plt.close()
+
+
 if __name__ == "__main__":
-    test_mnist()
+    test_stochastic()
