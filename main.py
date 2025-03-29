@@ -41,6 +41,7 @@ ex.observers.append(NeptuneObserver(run=run))
 def config():
     tags = ["gud"]
     length = 20
+    comment = ""
 
     # Model configuration
     model_config = {
