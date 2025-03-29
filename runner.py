@@ -141,14 +141,14 @@ def run(
 name = "stochastic-1"
 
 for rep in range(10):
-    for step in [1, 2, 4, 8, 12, 24, 48]:
+    for step in [1, 2, 4, 8, 12, 24]:
         ws = [1, 2, 4, 8, 12, 16, 24, 32, 64, 128]
         for w in ws:
             run(
                 kind="UD",
                 direction="block_shuffle",
                 step=step,
-                length=96,
+                length=48,
                 window=w,
                 sampling_steps=500,
                 generator_class="Stochastic",
