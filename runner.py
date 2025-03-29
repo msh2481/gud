@@ -130,15 +130,16 @@ def run(
         loss_type=loss_type,
         generator_class=generator_class,
     )
+    comment = f"w={window} step={step} l={loss_type} | {comment}"
+    config_updates["comment"] = comment
     updates_items = [f"{k}={repr(v)}" for k, v in config_updates.items()]
     updates_str = " ".join([repr(item) for item in updates_items])
-    comment = f"w={window} step={step} l={loss_type} | {comment}"
     cli_command = f"python main.py with {updates_str} -c '{comment}'"
     logger.info(f"Running: {cli_command}")
     os.system(cli_command)
 
 
-name = "stochastic-1"
+name = "eps-2"
 
 for rep in range(10):
     for step in [1, 2, 4, 8, 12, 24]:

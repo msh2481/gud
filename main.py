@@ -50,7 +50,7 @@ def config():
         "n_layers": 4,
         "dropout": 0.0,
         "use_causal_mask": False,
-        "mlp": False,
+        "predict_eps": True,  # If True, neural net models eps, which is then converted to x0
     }
 
     # Training configuration
@@ -151,33 +151,31 @@ class Denoiser(nn.Module):
         n_layers: int = 4,
         dropout: float = 0.0,
         use_causal_mask: bool = False,
-        mlp: bool = False,
+        predict_eps: bool = True,
     ):
         super().__init__()
-        if mlp:
-            raise NotImplementedError("MLP not implemented")
-        else:
-            self.use_causal_mask = use_causal_mask
-            self.pos_encoding = nn.Parameter(torch.zeros(1, N, d_model))
-            self.input_proj = nn.Linear(3, d_model)
-            mask = torch.triu(torch.ones(N, N), diagonal=1)
-            mask = mask.masked_fill(mask == 1, float("-inf"))
-            self.register_buffer("causal_mask", mask)
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=n_heads,
-                dim_feedforward=4 * d_model,
-                dropout=dropout,
-                batch_first=True,  # [batch, seq, features]
-                norm_first=True,  # Better training stability
-            )
-            self.transformer = nn.TransformerEncoder(
-                encoder_layer,
-                num_layers=n_layers,
-                enable_nested_tensor=False,
-            )
-            self.output_proj = nn.Linear(d_model, 1)
-            self._init_pos_encoding()
+        self.use_causal_mask = use_causal_mask
+        self.predict_eps = predict_eps
+        self.pos_encoding = nn.Parameter(torch.zeros(1, N, d_model))
+        self.input_proj = nn.Linear(3, d_model)
+        mask = torch.triu(torch.ones(N, N), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float("-inf"))
+        self.register_buffer("causal_mask", mask)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            dim_feedforward=4 * d_model,
+            dropout=dropout,
+            batch_first=True,  # [batch, seq, features]
+            norm_first=True,  # Better training stability
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=n_layers,
+            enable_nested_tensor=False,
+        )
+        self.output_proj = nn.Linear(d_model, 1)
+        self._init_pos_encoding()
 
     def _init_pos_encoding(self):
         """Initialize positional encodings using sine/cosine functions"""
@@ -212,7 +210,13 @@ class Denoiser(nn.Module):
             x = self.transformer(x, mask=self.causal_mask)  # [batch, seq_len, d_model]
         else:
             x = self.transformer(x)  # [batch, seq_len, d_model]
-        return self.output_proj(x).squeeze(-1)
+        if self.predict_eps:
+            eps = self.output_proj(x).squeeze(-1)
+            x0 = (noisy_seq - (1 - signal_var).sqrt() * eps) / signal_var.sqrt()
+            return x0
+        else:
+            x0 = self.output_proj(x).squeeze(-1)
+            return x0
 
     @typed
     def get_score(
@@ -390,7 +394,7 @@ def setup_model(_run, model_config: dict, train_config: dict) -> tuple[nn.Module
         n_layers=model_config["n_layers"],
         dropout=model_config["dropout"],
         use_causal_mask=model_config["use_causal_mask"],
-        mlp=model_config["mlp"],
+        predict_eps=model_config["predict_eps"],
     )
     model.to(device)
     n_parameters = sum(p.numel() for p in model.parameters())
