@@ -78,6 +78,8 @@ def get_config(
     if generator_class == "MNIST":
         length = 100
 
+    # ensure that models/ directory exists
+    os.makedirs("models", exist_ok=True)
     output_path = f"models/{uuid.uuid4()}.pt"
     config_updates = {
         "diffusion_config": {
