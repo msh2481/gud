@@ -262,8 +262,10 @@ def get_samples(
     x_1: Float[TT, "batch seq_len"],
     schedule: Schedule,
     diffusion_config: dict,
+    dataset: DiffusionDataset,
 ) -> Float[TT, "batch n_steps seq_len"]:
     """Sample from the diffusion model following the schedule."""
+    assert dataset is not None, "dataset is required for sampling"
     device = x_1.device
     n_steps = diffusion_config["sampling_steps"]
     batch_size, seq_len = x_1.shape
@@ -278,6 +280,12 @@ def get_samples(
         t = ts[:, it + 1]
         mu, sigma = backward_process(model, schedule, p=p, t=t, x_t=x_t)
         xs[:, it] = mu + sigma.sqrt() * torch.randn_like(x_t)
+
+    # Denormalize samples for visualization if dataset is provided
+    if dataset is not None:
+        for i in range(n_steps + 1):
+            xs[:, i] = dataset.denormalize(xs[:, i])
+
     return xs.flip(dims=[1])
 
 
@@ -334,6 +342,7 @@ def ode_sampling(
     x_1: Float[TT, "batch seq_len"],
     schedule: Schedule,
     diffusion_config: dict,
+    dataset: DiffusionDataset,
     compute_likelihood: bool = True,
 ) -> (
     tuple[Float[TT, "batch n_steps seq_len"], Float[TT, "batch"]]
@@ -376,6 +385,11 @@ def ode_sampling(
                 likelihood += addition
             else:
                 logger.warning(f"likelihood is nan at {it}")
+
+    if dataset is not None:
+        for i in range(n_steps + 1):
+            xs[:, i] = dataset.denormalize(xs[:, i])
+
     if compute_likelihood:
         logger.info(f"likelihood: {likelihood.mean():.6f}")
         return xs.flip(dims=[1]), likelihood
@@ -414,7 +428,9 @@ def get_dataset(
     generator_config: dict,
     inference: bool = False,
     device: torch.device | str | None = None,
-) -> tuple[DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader]:
+) -> tuple[
+    DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader, DiffusionDataset
+]:
     generator_class = globals()[generator_config["generator_class"]]
     generator = generator_class(**generator_config)
     while len(generator) < train_config["dataset_size"]:
@@ -432,11 +448,18 @@ def get_dataset(
     if device is not None:
         schedule = schedule.to(device)
     visualize_schedule(schedule)
+
     dataset = DiffusionDataset(clean_data, schedule)
+
+    # Move normalization stats to the correct device
+    if device is not None:
+        dataset.data_mean = dataset.data_mean.to(device)
+        dataset.data_std = dataset.data_std.to(device)
+
     train_loader = DataLoader(
         dataset, batch_size=train_config["batch_size"], shuffle=True
     )
-    return generator, clean_data, schedule, train_loader
+    return generator, clean_data, schedule, train_loader, dataset
 
 
 @ex.capture
@@ -514,7 +537,7 @@ def save_model(
 def train_denoiser(_run, model_config, train_config, diffusion_config):
     """Train the denoising model"""
     model, device = setup_model()
-    _generator, _clean_data, _schedule, train_loader = get_dataset(
+    _generator, _clean_data, _schedule, train_loader, _dataset = get_dataset(
         inference=False, device=device
     )
     opt = torch.optim.Adam(
@@ -678,7 +701,7 @@ def animated_sample(
         model_path = model_path.replace(".pt", "_ema.pt")
 
     model, device = load_model(model_path=model_path)
-    generator, clean_data, schedule, _train_loader = get_dataset(
+    generator, clean_data, schedule, _train_loader, dataset = get_dataset(
         inference=True, device=device
     )
 
@@ -696,14 +719,19 @@ def animated_sample(
     ), f"schedule should be a Schedule, got {type(schedule)}"
     times = torch.ones((1,), device=device)
     signal_var = schedule.signal_var(times)
-    xt = x0 * torch.sqrt(signal_var) + torch.randn_like(x0) * torch.sqrt(1 - signal_var)
+
+    # Normalize x0 for diffusion using dataset's normalize method
+    x0_norm = dataset.normalize(x0)
+    xt = x0_norm * torch.sqrt(signal_var) + torch.randn_like(x0_norm) * torch.sqrt(
+        1 - signal_var
+    )
     assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
 
     with torch.no_grad():
         if use_ode:
-            samples, _likelihood = ode_sampling(model, xt, schedule)
+            samples, _likelihood = ode_sampling(model, xt, schedule, dataset=dataset)
         else:
-            samples = get_samples(model, xt, schedule)
+            samples = get_samples(model, xt, schedule, dataset=dataset)
         assert (
             samples.dtype == torch.float64
         ), f"samples should be float64, got {samples.dtype}"
@@ -805,7 +833,7 @@ def evaluate(
         model_path = model_path.replace(".pt", "_ema.pt")
 
     model, device = load_model(model_path=model_path)
-    generator, clean_data, schedule, _train_loader = get_dataset(
+    generator, clean_data, schedule, _train_loader, dataset = get_dataset(
         inference=True, device=device
     )
 
@@ -816,13 +844,14 @@ def evaluate(
 
     schedule = schedule.to(device)
     with torch.no_grad():
+        # Start with pure noise (already in normalized space)
         x_1 = torch.randn(
             (n_samples, model_config["seq_len"]), dtype=torch.float64, device=device
         )
         assert x_1.dtype == torch.float64, f"xt should be float64, got {x_1.dtype}"
 
         samples, loglikelihood = ode_sampling(
-            model, x_1, schedule, compute_likelihood=True
+            model, x_1, schedule, dataset=dataset, compute_likelihood=True
         )
         nll = -loglikelihood
         mean_nll = nll.mean().item()
@@ -891,18 +920,12 @@ def sample_distribution(
     n_samples: int = 100,
     use_ema: bool = True,
 ):
-    """Generate multiple samples and visualize their distribution.
-
-    This function:
-    1. Generates n_samples from the diffusion model
-    2. Plots all samples as line plots to visualize the distribution
-    3. Creates a histogram of the first element values across all samples
-    """
+    """Generate multiple samples and visualize their distribution."""
     if use_ema and not model_path.endswith("_ema.pt"):
         model_path = model_path.replace(".pt", "_ema.pt")
 
     model, device = load_model(model_path=model_path)
-    generator, clean_data, schedule, _train_loader = get_dataset(
+    generator, clean_data, schedule, _train_loader, dataset = get_dataset(
         inference=True, device=device
     )
 
@@ -915,13 +938,16 @@ def sample_distribution(
 
     # Generate samples
     with torch.no_grad():
+        # Start with pure noise in normalized space
         xt = torch.randn(
             (n_samples, model_config["seq_len"]), dtype=torch.float64, device=device
         )
         assert xt.dtype == torch.float64, f"xt should be float64, got {xt.dtype}"
 
-        # Use ODE sampling with likelihood calculation
-        samples, likelihood = ode_sampling(model, xt, schedule, compute_likelihood=True)
+        # Use ODE sampling with likelihood calculation, passing dataset for denormalization
+        samples, likelihood = ode_sampling(
+            model, xt, schedule, dataset=dataset, compute_likelihood=True
+        )
 
         # Log likelihood statistics
         mean_likelihood = likelihood.mean().item()

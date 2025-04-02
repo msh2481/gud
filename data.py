@@ -485,8 +485,25 @@ def test_mnist():
 class DiffusionDataset(Dataset):
     @typed
     def __init__(self, data: Float[TT, "batch seq_len"], schedule: Schedule):
-        self.data = data
+        self.data_raw = data
         self.schedule = schedule
+
+        # Compute and store normalization statistics
+        self.data_mean = data.mean(dim=0, keepdim=True)
+        self.data_std = (
+            data.std(dim=0, keepdim=True) + 1e-5
+        )  # Add small epsilon to avoid division by zero
+        self.data = self.normalize(data)
+
+    @typed
+    def normalize(self, x: Float[TT, "... seq_len"]) -> Float[TT, "... seq_len"]:
+        """Normalize data to mean 0, std 1"""
+        return (x - self.data_mean) / self.data_std
+
+    @typed
+    def denormalize(self, x: Float[TT, "... seq_len"]) -> Float[TT, "... seq_len"]:
+        """Convert normalized data back to original scale"""
+        return x * self.data_std + self.data_mean
 
     @typed
     def __getitem__(self, idx: int) -> tuple[
@@ -497,6 +514,7 @@ class DiffusionDataset(Dataset):
         Float[TT, "seq_len"],  # snr
         Float[TT, ""],  # timestep
     ]:
+        # Sample normalized data
         x0 = self.data[idx]
         timestep = self.schedule.sample_time()
         signal_var = self.schedule.signal_var(timestep)
@@ -604,7 +622,8 @@ class DiffusionDataset(Dataset):
 
 def test_stochastic():
     # generate some samples and print them
-    gen = Stochastic(length=4, permutation=[0, 1, 2, 3])
+    L = 48
+    gen = Stochastic(length=L, permutation=list(range(L)))
     samples = gen.sample(batch_size=10)
     for sample in samples:
         plt.plot(sample.cpu().numpy())
