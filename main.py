@@ -57,7 +57,7 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 2000,
+        "epochs": 300,
         "batch_size": 16,
         "dataset_size": 2000,
         "lr": 2e-3,
@@ -66,10 +66,10 @@ def config():
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
         "lr_warmup_epochs": 10,
         "lr_min_factor": 0.01,
-        "lr_step_size": 60,  # For step schedule: epochs per step
+        "lr_step_size": 10,  # For step schedule: epochs per step
         "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
         "loss_type": "mask_dsnr",  # Options: "simple", "vlb", "mask_dsnr"
-        "ema_decay": 0.999,
+        "ema_decay": 0.99,  # Set to 0.999 for longer running experiments
     }
 
     # Diffusion configuration
