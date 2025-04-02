@@ -151,7 +151,7 @@ run(
     window=1,
     sampling_steps=100,
     generator_class="Stochastic",
-    comment=f"{name}",
+    comment=f"fast AR",
 )
 
 # for rep in range(10):
