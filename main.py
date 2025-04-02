@@ -60,7 +60,7 @@ def config():
         "epochs": 300,
         "batch_size": 16,
         "dataset_size": 2000,
-        "lr": 1e-2,
+        "lr": 5e-3,
         "eval_every": 10,
         "eval_samples": 100,
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
