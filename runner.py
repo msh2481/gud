@@ -141,19 +141,30 @@ def run(
     os.system(cli_command)
 
 
-name = "eps-2"
+name = "test"
 
-for rep in range(10):
-    for step in [1, 2, 4, 8, 12, 24]:
-        ws = [1, 2, 4, 8, 12, 16, 24, 32, 64, 128]
-        for w in ws:
-            run(
-                kind="UD",
-                direction="block_shuffle",
-                step=step,
-                length=48,
-                window=w,
-                sampling_steps=500,
-                generator_class="Stochastic",
-                comment=f"{name} #{rep}",
-            )
+run(
+    kind="UD",
+    direction="block_shuffle",
+    step=1,
+    length=12,
+    window=1,
+    sampling_steps=100,
+    generator_class="Stochastic",
+    comment=f"{name}",
+)
+
+# for rep in range(10):
+#     for step in [1, 2, 4, 8, 12, 24]:
+#         ws = [1, 2, 4, 8, 12, 16, 24, 32, 64, 128]
+#         for w in ws:
+#             run(
+#                 kind="UD",
+#                 direction="block_shuffle",
+#                 step=step,
+#                 length=48,
+#                 window=w,
+#                 sampling_steps=500,
+#                 generator_class="Stochastic",
+#                 comment=f"{name} #{rep}",
+#             )
