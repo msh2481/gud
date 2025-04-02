@@ -330,10 +330,9 @@ class Stochastic(DataGenerator):
         for i in range(1, length):
             curr_idx = permutation[i]  # Current position in permutation
             prev_idx = permutation[i - 1]  # Previous position in permutation
-            diff = x[:, curr_idx] - x[:, prev_idx]
-            results[:, i - 1] = (
-                diff - diff.clip(torch.tensor(0.0), torch.tensor(1.0))
-            ).square()
+            diff1 = x[:, curr_idx] - x[:, prev_idx]  # MSE to prev
+            diff2 = x[:, curr_idx] - (x[:, prev_idx] + 1)  # MSE to prev+1
+            results[:, i - 1] = torch.minimum(diff1.square(), diff2.square())
         return results
 
     @typed
@@ -353,7 +352,9 @@ class Stochastic(DataGenerator):
             curr_idx = permutation[i]  # Position to generate
             prev_idx = permutation[i - 1]  # Position to base it on
             prev = result[:, prev_idx]
-            result[:, curr_idx] = prev + torch.rand_like(prev)
+            # Use discrete binary noise (0 or 1) instead of continuous
+            binary_noise = (torch.rand_like(prev) > 0.5).float()
+            result[:, curr_idx] = prev + binary_noise
 
         self.data = torch.cat([self.data, result], dim=0)
         return result
