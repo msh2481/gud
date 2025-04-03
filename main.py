@@ -57,7 +57,7 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 300,
+        "epochs": 500,
         "batch_size": 64,
         "dataset_size": 10000,
         "validation_dataset_size": 1000,  # Size of validation dataset
