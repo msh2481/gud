@@ -141,31 +141,20 @@ def run(
     os.system(cli_command)
 
 
-name = "permutation-test"
+name = "permutation-grid"
 
 
-run(
-    kind="UD",
-    direction="block_shuffle",
-    step=1,
-    length=24,
-    window=1,
-    sampling_steps=500,
-    generator_class="LogisticMapPermutation",
-    comment=f"{name}",
-)
-
-# for rep in range(3):
-#     for step in [12, 4, 1]:
-#         ws = [1, 2, 4, 8, 12, 24, 1e9]
-#         for w in ws:
-#             run(
-#                 kind="UD",
-#                 direction="block_shuffle",
-#                 step=step,
-#                 length=24,
-#                 window=w,
-#                 sampling_steps=500,
-#                 generator_class="LogisticMapPermutation",
-#                 comment=f"{name}",
-#             )
+for rep in range(3):
+    for step in [12, 4, 1]:
+        ws = [1, 2, 4, 8, 12, 24, 1e9]
+        for w in ws:
+            run(
+                kind="UD",
+                direction="block_shuffle",
+                step=step,
+                length=24,
+                window=w,
+                sampling_steps=500,
+                generator_class="LogisticMapPermutation",
+                comment=f"{name}",
+            )
