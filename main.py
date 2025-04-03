@@ -57,16 +57,17 @@ def config():
     # Training configuration
     train_config = {
         "output_path": "denoiser.pt",
-        "epochs": 500,
-        "batch_size": 16,
-        "dataset_size": 2000,
+        "epochs": 300,
+        "batch_size": 64,
+        "dataset_size": 10000,
+        "validation_dataset_size": 1000,  # Size of validation dataset
         "lr": 5e-3,
         "eval_every": 50,
         "eval_samples": 100,
         "lr_schedule": "step",  # Options: "constant", "cosine", "linear", "step"
         "lr_warmup_epochs": 10,
         "lr_min_factor": 0.01,
-        "lr_step_size": 20,  # For step schedule: epochs per step
+        "lr_step_size": 15,  # For step schedule: epochs per step
         "lr_gamma": 0.1**0.1,  # For step schedule: multiplicative factor
         "loss_type": "mask_dsnr",  # Options: "simple", "vlb", "mask_dsnr"
         "ema_decay": 0.99,  # Set to 0.999 for longer running experiments
@@ -426,29 +427,55 @@ def get_dataset(
     train_config: dict,
     diffusion_config: dict,
     generator_config: dict,
+    dataset_type: str = "train",  # 'train' or 'validation'
     inference: bool = False,
     device: torch.device | str | None = None,
 ) -> tuple[
     DataGenerator, Float[TT, "batch seq_len"], Schedule, DataLoader, DiffusionDataset
 ]:
     generator_class = globals()[generator_config["generator_class"]]
-    generator = generator_class(**generator_config)
-    while len(generator) < train_config["dataset_size"]:
+
+    # Create generator with a different seed for validation
+    gen_params = generator_config.copy()
+    if dataset_type == "validation":
+        # Add validation seed to params to ensure different data
+        gen_params["validation_seed"] = 42
+
+    generator = generator_class(**gen_params)
+
+    # Determine dataset size based on type
+    dataset_size = (
+        train_config["validation_dataset_size"]
+        if dataset_type == "validation"
+        else train_config["dataset_size"]
+    )
+
+    # Generate data if needed
+    while len(generator) < dataset_size:
         generator.sample(10)
-    # generator.append_to_save()
-    clean_data = generator.data[: train_config["dataset_size"]]
+
+    # Get the clean data
+    clean_data = generator.data[:dataset_size]
+
+    # Setup schedule
     w = torch.tensor(diffusion_config["window"], dtype=torch.float64)
     if device is not None:
         w = w.to(device)
         clean_data = clean_data.to(device)
+
     schedule = Schedule(
         N=model_config["seq_len"],
         w=w,
     )
+
     if device is not None:
         schedule = schedule.to(device)
-    visualize_schedule(schedule)
 
+    # Only visualize schedule for train dataset to avoid duplicate plots
+    if dataset_type == "train":
+        visualize_schedule(schedule)
+
+    # Create dataset
     dataset = DiffusionDataset(clean_data, schedule)
 
     # Move normalization stats to the correct device
@@ -456,10 +483,14 @@ def get_dataset(
         dataset.data_mean = dataset.data_mean.to(device)
         dataset.data_std = dataset.data_std.to(device)
 
-    train_loader = DataLoader(
-        dataset, batch_size=train_config["batch_size"], shuffle=True
+    # Create data loader
+    data_loader = DataLoader(
+        dataset,
+        batch_size=train_config["batch_size"],
+        shuffle=(dataset_type == "train"),  # Only shuffle training data
     )
-    return generator, clean_data, schedule, train_loader, dataset
+
+    return generator, clean_data, schedule, data_loader, dataset
 
 
 @ex.capture
@@ -537,9 +568,17 @@ def save_model(
 def train_denoiser(_run, model_config, train_config, diffusion_config):
     """Train the denoising model"""
     model, device = setup_model()
+
+    # Get training dataset
     _generator, _clean_data, _schedule, train_loader, _dataset = get_dataset(
-        inference=False, device=device
+        dataset_type="train", inference=False, device=device
     )
+
+    # Get validation dataset
+    _val_generator, _val_clean_data, _val_schedule, val_loader, _val_dataset = (
+        get_dataset(dataset_type="validation", inference=False, device=device)
+    )
+
     opt = torch.optim.Adam(
         model.parameters(),
         lr=train_config["lr"],  # betas=(0.95, 0.999)
@@ -550,8 +589,12 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
 
     scheduler = setup_lr_scheduler(optimizer=opt)
 
-    losses = []
+    train_losses = []
+    val_losses = []
+
     for epoch in range(train_config["epochs"]):
+        # Training phase
+        model.train()
         epoch_losses = []
 
         for batch in train_loader:
@@ -561,20 +604,34 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
             ema.update()
 
         # Compute epoch & avg loss
-        current_loss = np.mean(epoch_losses)
-        losses.append(current_loss)
-        half = len(losses) // 2
-        avg_loss = sum(losses[half:]) / len(losses[half:])
+        current_train_loss = np.mean(epoch_losses)
+        train_losses.append(current_train_loss)
+        half = len(train_losses) // 2
+        avg_train_loss = sum(train_losses[half:]) / len(train_losses[half:])
+
+        # Compute validation loss
+        current_val_loss = compute_validation_loss(
+            model=model, val_loader=val_loader, device=device
+        )
+        val_losses.append(current_val_loss)
+        avg_val_loss = (
+            sum(val_losses[half:]) / len(val_losses[half:])
+            if half > 0
+            else current_val_loss
+        )
 
         # Get current learning rate
         current_lr = opt.param_groups[0]["lr"]
         logger.info(
-            f"Epoch {epoch}: loss = {current_loss:.6f} (avg={avg_loss:.6f}, lr={current_lr:.6f})"
+            f"Epoch {epoch}: train_loss = {current_train_loss:.6f}, val_loss = {current_val_loss:.6f}, "
+            f"avg_train={avg_train_loss:.6f}, avg_val={avg_val_loss:.6f}, lr={current_lr:.6f}"
         )
 
         # Log metrics to Sacred
-        _run.log_scalar("loss", current_loss, epoch)
-        _run.log_scalar("avg_loss", avg_loss, epoch)
+        _run.log_scalar("train_loss", current_train_loss, epoch)
+        _run.log_scalar("val_loss", current_val_loss, epoch)
+        _run.log_scalar("avg_train_loss", avg_train_loss, epoch)
+        _run.log_scalar("avg_val_loss", avg_val_loss, epoch)
         _run.log_scalar("lr", current_lr, epoch)
 
         # Step the learning rate scheduler
@@ -586,7 +643,10 @@ def train_denoiser(_run, model_config, train_config, diffusion_config):
             ema.apply_shadow()
             save_model(model=model, device=device, is_ema=True)
             evaluate(
-                model_path=train_config["output_path"], epoch_number=epoch, use_ema=True
+                model_path=train_config["output_path"],
+                epoch_number=epoch,
+                use_ema=True,
+                dataset_type="validation",  # Use validation dataset for evaluation
             )
             ema.restore()
 
@@ -695,6 +755,7 @@ def animated_sample(
     show_mnist: bool = False,
     use_ode: bool = False,
     use_ema: bool = True,
+    dataset_type: str = "train",
 ):
     """Sample from a trained model"""
     if use_ema and not model_path.endswith("_ema.pt"):
@@ -702,7 +763,7 @@ def animated_sample(
 
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader, dataset = get_dataset(
-        inference=True, device=device
+        dataset_type=dataset_type, inference=True, device=device
     )
 
     # Assert that tensors are float64
@@ -746,6 +807,7 @@ def show_1d_samples(
     final_losses: Float[TT, "batch"],
     n_samples: int,
     epoch_number: int | None = None,
+    output_filename: str = "samples.png",
 ):
     fig, (ax1, ax2) = plt.subplots(
         2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}
@@ -773,9 +835,9 @@ def show_1d_samples(
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig("samples.png", dpi=300)
+    plt.savefig(output_filename, dpi=300)
     plt.close()
-    run["samples"].append(File("samples.png"))
+    run["samples"].append(File(output_filename))
 
 
 @typed
@@ -785,6 +847,7 @@ def show_mnist_samples(
     n_samples: int,
     epoch_number: int | None = None,
     mid_samples: Float[TT, "batch seq_len"] | None = None,
+    output_filename: str = "samples.png",
 ):
     # Convert final_samples to numpy and reshape to 10x10 images
     # Then use torchvision.utils.make_grid to create a grid of the images
@@ -795,24 +858,25 @@ def show_mnist_samples(
     plt.figure(figsize=(8, 8))
     plt.imshow(grid.permute(1, 2, 0))
     plt.title("Final Samples")
-    plt.savefig("samples.png", dpi=300)
+    plt.savefig(output_filename, dpi=300)
     plt.close()
 
     # Upload to Neptune
-    run["samples"].append(File("samples.png"))
+    run["samples"].append(File(output_filename))
 
     # If mid_samples are provided, create a similar visualization
     if mid_samples is not None:
+        mid_output_filename = output_filename.replace("samples", "partial_samples")
         mid_images = mid_samples[:9].reshape(-1, 1, 10, 10)
         mid_grid = make_grid(mid_images, nrow=3)
         plt.figure(figsize=(8, 8))
         plt.imshow(mid_grid.permute(1, 2, 0))
         plt.title("Half-Denoised Samples")
-        plt.savefig("partial_samples.png", dpi=300)
+        plt.savefig(mid_output_filename, dpi=300)
         plt.close()
 
         # Upload to Neptune
-        run["partial_samples"].append(File("partial_samples.png"))
+        run["partial_samples"].append(File(mid_output_filename))
 
 
 @ex.capture
@@ -824,6 +888,7 @@ def evaluate(
     epoch_number: int | None = None,
     use_ema: bool = False,
     show_mnist: bool = False,
+    dataset_type: str = "train",
 ):
     """Evaluate the model"""
     n_samples = train_config["eval_samples"]
@@ -834,7 +899,7 @@ def evaluate(
 
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader, dataset = get_dataset(
-        inference=True, device=device
+        dataset_type=dataset_type, inference=True, device=device
     )
 
     # Assert that tensors are float64
@@ -859,13 +924,14 @@ def evaluate(
         q25_nll = nll.quantile(0.25).item()
         q75_nll = nll.quantile(0.75).item()
         if epoch_number is not None:
-            _run.log_scalar("NLL_mean", mean_nll, epoch_number)
-            _run.log_scalar("NLL_median", median_nll, epoch_number)
-            _run.log_scalar("NLL_q25", q25_nll, epoch_number)
-            _run.log_scalar("NLL_q75", q75_nll, epoch_number)
+            prefix = f"{dataset_type}_" if dataset_type != "train" else ""
+            _run.log_scalar(f"{prefix}NLL_mean", mean_nll, epoch_number)
+            _run.log_scalar(f"{prefix}NLL_median", median_nll, epoch_number)
+            _run.log_scalar(f"{prefix}NLL_q25", q25_nll, epoch_number)
+            _run.log_scalar(f"{prefix}NLL_q75", q75_nll, epoch_number)
 
         logger.info(
-            f"NLL stats: mean={mean_nll:.3f}, median={median_nll:.3f}, q25={q25_nll:.3f}, q75={q75_nll:.3f}"
+            f"{dataset_type.capitalize()} NLL stats: mean={mean_nll:.3f}, median={median_nll:.3f}, q25={q25_nll:.3f}, q75={q75_nll:.3f}"
         )
 
         assert (
@@ -888,9 +954,12 @@ def evaluate(
                 print(
                     f"Step {step}: {losses.mean():.3f} (q25={q25:.3f}, q50={q50:.3f}, q75={q75:.3f})"
                 )
-        _run.log_scalar("q25", q25, epoch_number)
-        _run.log_scalar("q50", q50, epoch_number)
-        _run.log_scalar("q75", q75, epoch_number)
+
+        if epoch_number is not None:
+            prefix = f"{dataset_type}_" if dataset_type != "train" else ""
+            _run.log_scalar(f"{prefix}q25", q25, epoch_number)
+            _run.log_scalar(f"{prefix}q50", q50, epoch_number)
+            _run.log_scalar(f"{prefix}q75", q75, epoch_number)
 
         # Save distribution of final samples
         final_samples = samples[:, -1, :].cpu()  # [n_samples, seq_len]
@@ -900,12 +969,22 @@ def evaluate(
         mid_step = n_steps // 2
         mid_samples = samples[:, mid_step, :].cpu()  # [n_samples, seq_len]
 
+        # Add dataset type to output filename
+        output_filename = f"{dataset_type}_samples.png"
+
         if show_mnist:
             show_mnist_samples(
-                final_samples, final_losses, n_samples, epoch_number, mid_samples
+                final_samples,
+                final_losses,
+                n_samples,
+                epoch_number,
+                mid_samples,
+                output_filename,
             )
         else:
-            show_1d_samples(final_samples, final_losses, n_samples, epoch_number)
+            show_1d_samples(
+                final_samples, final_losses, n_samples, epoch_number, output_filename
+            )
 
         return final_samples, final_losses
 
@@ -919,6 +998,7 @@ def sample_distribution(
     model_config: dict,
     n_samples: int = 100,
     use_ema: bool = True,
+    dataset_type: str = "train",
 ):
     """Generate multiple samples and visualize their distribution."""
     if use_ema and not model_path.endswith("_ema.pt"):
@@ -926,7 +1006,7 @@ def sample_distribution(
 
     model, device = load_model(model_path=model_path)
     generator, clean_data, schedule, _train_loader, dataset = get_dataset(
-        inference=True, device=device
+        dataset_type=dataset_type, inference=True, device=device
     )
 
     # Assert that tensors are float64
@@ -1003,10 +1083,11 @@ def sample_distribution(
 
         # Adjust layout and save
         plt.tight_layout()
-        plt.savefig("samples.png", dpi=300)
+        output_filename = f"{dataset_type}_distribution_samples.png"
+        plt.savefig(output_filename, dpi=300)
         plt.close()
 
-        logger.info("Sample distribution visualization saved to samples.png")
+        logger.info(f"Sample distribution visualization saved to {output_filename}")
         return final_samples, losses
 
 
@@ -1110,6 +1191,40 @@ def setup_lr_scheduler(optimizer: torch.optim.Optimizer, train_config: dict) -> 
         raise ValueError(f"Unknown learning rate schedule: {schedule_type}")
 
     return scheduler
+
+
+@ex.capture
+@typed
+def compute_validation_loss(
+    model: nn.Module,
+    val_loader: DataLoader,
+    device: torch.device | str,
+    train_config: dict,
+) -> float:
+    model.eval()
+    val_losses = []
+
+    with torch.no_grad():
+        for batch in val_loader:
+            xt, signal_var, dsnr_dt, x0, snr, timestep = batch
+            xt, signal_var, dsnr_dt, x0, snr = (
+                xt.to(device),
+                signal_var.to(device),
+                dsnr_dt.to(device),
+                x0.to(device),
+                snr.to(device),
+            )
+
+            # Forward pass
+            x0_hat = model(xt, signal_var)
+            x0_errors = (x0_hat - x0).square()
+
+            # Always use VLB loss for validation to be consistent
+            losses = (dsnr_dt * x0_errors).sum(dim=-1).mean()
+            val_losses.append(losses.item())
+
+    model.train()
+    return np.mean(val_losses)
 
 
 @ex.automain
