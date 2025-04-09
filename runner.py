@@ -143,29 +143,17 @@ def run(
 
 name = "stochastic-grid"
 
-run(
-    kind="UD",
-    direction="block_shuffle",
-    step=4,
-    length=24,
-    window=24,
-    sampling_steps=500,
-    generator_class="Stochastic",
-    comment="test",
-)
-
-
-# for rep in range(3):
-#     for step in [12, 4, 1]:
-#         ws = [1, 2, 4, 8, 12, 24, 1e9]
-#         for w in ws:
-#             run(
-#                 kind="UD",
-#                 direction="block_shuffle",
-#                 step=step,
-#                 length=24,
-#                 window=w,
-#                 sampling_steps=500,
-#                 generator_class="Stochastic",
-#                 comment=f"{name}",
-#             )
+for rep in range(3):
+    for step in [2, 3, 6, 8]:
+        ws = [1, 2, 4, 8, 12, 24, 1e9]
+        for w in ws:
+            run(
+                kind="UD",
+                direction="block_shuffle",
+                step=step,
+                length=24,
+                window=w,
+                sampling_steps=500,
+                generator_class="Stochastic",
+                comment=f"{name}",
+            )
