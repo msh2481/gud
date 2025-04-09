@@ -817,12 +817,7 @@ def show_1d_samples(
 
     if generator_config is not None and "permutation" in generator_config:
         permutation = generator_config["permutation"]
-        # Create inverse permutation
-        inv_perm = [0] * len(permutation)
-        for i, p in enumerate(permutation):
-            inv_perm[p] = i
-        # Apply inverse permutation to samples
-        final_samples = final_samples[:, inv_perm]
+        final_samples = final_samples[:, permutation]
 
     for i in range(n_samples):
         ax1.plot(final_samples[i].cpu().numpy(), alpha=0.2, color="blue", linewidth=0.5)
