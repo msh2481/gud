@@ -145,7 +145,8 @@ name = "stochastic-grid"
 
 for rep in range(3):
     for step in [2, 3, 6, 8]:
-        ws = [1, 2, 4, 8, 12, 24, 1e9]
+        # ws = [1, 2, 4, 8, 12, 24, 1e9]
+        ws = [3, 6, 10, 16]
         for w in ws:
             run(
                 kind="UD",
