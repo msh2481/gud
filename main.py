@@ -801,6 +801,7 @@ def animated_sample(
         )
 
 
+@ex.capture
 @typed
 def show_1d_samples(
     final_samples: Float[TT, "batch seq_len"],
@@ -808,10 +809,21 @@ def show_1d_samples(
     n_samples: int,
     epoch_number: int | None = None,
     output_filename: str = "samples.png",
+    generator_config: dict | None = None,
 ):
     fig, (ax1, ax2) = plt.subplots(
         2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}
     )
+
+    if generator_config is not None and "permutation" in generator_config:
+        permutation = generator_config["permutation"]
+        # Create inverse permutation
+        inv_perm = [0] * len(permutation)
+        for i, p in enumerate(permutation):
+            inv_perm[p] = i
+        # Apply inverse permutation to samples
+        final_samples = final_samples[:, inv_perm]
+
     for i in range(n_samples):
         ax1.plot(final_samples[i].cpu().numpy(), alpha=0.2, color="blue", linewidth=0.5)
     mean_loss = final_losses.mean().item()
@@ -983,7 +995,12 @@ def evaluate(
             )
         else:
             show_1d_samples(
-                final_samples, final_losses, n_samples, epoch_number, output_filename
+                final_samples,
+                final_losses,
+                n_samples,
+                epoch_number,
+                output_filename,
+                generator,
             )
 
         return final_samples, final_losses
