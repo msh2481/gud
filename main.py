@@ -1000,7 +1000,6 @@ def evaluate(
                 n_samples,
                 epoch_number,
                 output_filename,
-                generator,
             )
 
         return final_samples, final_losses
